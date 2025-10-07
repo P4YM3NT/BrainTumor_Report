@@ -1,0 +1,984 @@
+---
+title: "Klassifikation von Gehirntumoren aus MRT-Bildern mittels Transfer Learning"
+author: "John Zekiri (102393)"
+date: "09.06.2025"
+lang: de
+format:
+  html:
+    toc: true
+    toc-location: right
+    lof: true
+    number-sections: true
+    theme: cosmo
+    code-fold: true
+    link-citations: true
+    citations-hover: true
+    citation-location: document
+    reference-location: document
+    page-layout: full
+    embed-resources: true
+    self-contained: true
+    standalone: true
+    fontsize: 1.1em
+highlight-style: github
+fontsize: 11pt
+bibliography: references.bib
+csl: apa.csl
+---
+
+# Einleitung
+
+## Motivation und Problemstellung
+
+Die Klassifikation von Gehirntumoren auf Basis von Magnetresonanztomographie (MRT) ist ein hochrelevantes Thema der medizinischen Bildanalyse. Tumoren wie Gliome, Meningeome oder Hypophysenadenome unterscheiden sich in Wachstum, Prognose und Therapie erheblich. Eine präzise Erkennung und Abgrenzung ist daher von zentraler Bedeutung für Diagnose und Behandlungsplanung.
+
+In der klinischen Praxis werden MRT-Bilder von Radiolog:innen manuell ausgewertet, was zeitaufwendig ist und eine hohe fachliche Expertise erfordert. In den letzten Jahren haben Methoden des Maschinellen Lernens (ML) und insbesondere tiefe neuronale Netze erhebliche Fortschritte in der automatisierten Bildklassifikation ermöglicht. Modelle, die auf Convolutional Neural Networks (CNNs) basieren, sind in der Lage, komplexe visuelle Muster zu erfassen und Klassifikationsaufgaben mit hoher Genauigkeit zu lösen.
+
+## Ziele und Thesen
+
+Im Rahmen dieser Arbeit soll ein Klassifikationsmodell für Hirntumore entwickelt werden, das auf einem öffentlich verfügbaren MRT-Datensatz trainiert wird. Der Datensatz umfasst drei Tumorarten sowie die Klasse "kein Tumor". Als Modell wird ein vortrainiertes EfficientNet-B0 eingesetzt, das zunächst im Head-only-Verfahren und anschließend im Fine-Tuning-Verfahren optimiert wird. Auf diese Themen wird im Verlauf der Ausarbeitung näher eingegangen.
+
+::: {.callout-note title="Zentrale Ziele dieser Arbeit" icon="false"}
+Die zentralen Ziele dieser Arbeit sind:
+
+* Aufbau einer nachvollziehbaren Machine-Learning-Pipeline von der Datenaufbereitung bis zur Evaluation.
+* Vergleich von Head-only-Training und Fine-Tuning.
+* Evaluation mit mehreren Metriken: Accurancy, macro-F1, ROC und Confusion Matrix.
+* Kritische Reflexion der Ergebnisse im Hinblick auf Limitationen und Übertragbarkeit.
+* Einbezug von Erklärbarkeitsmethoden (Grad-CAM) und Kalibrierung (Reliability Diagram, Expected Calibration Error).
+:::
+
+::: {.callout-note title="Leitende Thesen" icon="false"}
+Die leitenden Thesen dieser Arbeit sind: 
+
+1. Hypothese `H1` Grad-CAM ermöglicht eine visuelle Verifikation, dass das Modell auf tumorrelevante Regionen fokussiert.
+2. Hypothese `H2` Kalibrierung bietet zusätzliche Einblicke in die Vertrauenswürdigkeit der Vorhersagen.
+3. Hypothese `H3` Das Fine-Tuning der letzten Netzwerkblöcke verbessert die Klassifikationsleistung gegenüber dem reinen Training des Klassifikationskopfes.
+4. Hypothese `H4`Der Einsatz von Early Stopping, Mixed Precision und Gradient Accumulation ermöglicht stabiles Training auch auf Hardware mit begrenzten Ressourcen.
+:::
+
+## Aufbau der Arbeit
+
+Die Arbeit hat folgenden Aufbau. Nach der Darstellung der theoretischen Grundlagen (Kapitel 2) erfolgt die detaillierte Datenbeschreibung (Kapitel 3). Im Anschluss wird die Methodik beschrieben (Kapitel 4) und die Ergebnisse präsentiert (Kapitel 5). Das darauffolgende Kapitel (Kapitel 6) enthält eine kritische Diskussion und einen Ausblick, bevor im letzten Kapitel (Kapitel 7) die Reproduzierbarkeit dokumentiert wird. Fortlaufend findet sich das Quellenverzeichnis.
+
+# Grundlagen
+
+Dieses Kapitel skizziert die theoretischen und technischen Grundlagen der Arbeit: überwachtes Lernen, Multiklassen-Klassifikation, Convolutional Neural Networks (CNNs), Transfer Learning, Trainings- und Regularisierungstechniken, Evaluationsmetriken (inklusive Kalibrierung) sowie Erklärbarkeit mittels Grad-CAM.
+
+## Maschinelles Lernen vs. Deep Learning
+
+**Maschinelles Lernen (ML)** umfasst Verfahren, die aus Daten Muster lernen, um Vorhersagen zu treffen. Klassische ML-Pipelines für Bilder bestehen oft aus (1) **Feature-Engineering** (z. B. Kanten-/Texturmerkmale, HOG/SIFT) und (2) einem **Classifier** (z. B. SVM, Random Forest). Die Qualität hängt stark von den **handgebauten Merkmalen** ab.  
+
+**Deep Learning (DL)** ist ein Teilbereich von ML, der mit tiefen neuronalen Netzen arbeitet. Zentrale Idee ist **Representation Learning**: Das Modell **lernt** die Merkmale selbst – direkt aus den Rohbildern – und optimiert sie **gemeinsam** mit dem Klassifikator. Dadurch erreichen DL-Modelle, insbesondere **Convolutional Neural Networks (CNNs)**, in der Bildanalyse meist deutlich höhere Leistungen als klassische ML-Ansätze (@goodfellow2016deep; @lecun2015deep).
+
+::: {.callout-note title="Hauptunterschiede in der Praxis" icon="info"}
+- **Merkmale:** Klassisches ML nutzt handgebaute Features; DL lernt Merkmale automatisch aus den Daten.  
+- **Skalierung:** DL skaliert gut mit großen Datenmengen und Rechenressourcen; klassisches ML stößt bei komplexen Bildmustern schneller an Grenzen.  
+- **End-to-End-Training:** DL optimiert Feature-Extraktion und Klassifikation gemeinsam (bessere Anpassung an die Zielaufgabe).  
+- **Vorwissen:** DL braucht weniger Domänen-Feature-Design, kann aber mehr Daten verlangen.  
+:::
+
+**Warum DL für medizinische Bildklassifikation?**  
+Bilddaten enthalten hochdimensionale, komplexe Muster (Texturen, Lokalisation, Kontext). CNNs nutzen **Faltungen** und **Gewichtsteilung**, um lokale Strukturen effizient zu erfassen und über viele Schichten zu immer abstrakteren Repräsentationen zu verdichten. So übertreffen DL-Modelle für Bilder (seit AlexNet @krizhevsky2012imagenet, ResNet @he2016resnet) klassische Verfahren deutlich in Genauigkeit und Robustheit – auch bei Übertragungen auf neue, aber verwandte Aufgaben (@yosinski2014transfer).  
+
+## Überwachtes Lernen
+
+Beim **überwachten Lernen** (*Supervised Learning*) wird ein Modell mit Eingabe-Ausgabe-Paaren trainiert: Es erhält ein Beispiel (z. B. ein MRT-Bild) und das dazugehörige Label (z. B. „Gliom“). Ziel ist es, eine Abbildung zu lernen, die neue, unbekannte Beispiele korrekt vorhersagt (@goodfellow2016deep).  
+
+Das Training erfolgt über eine **Verlustfunktion (Loss)**, die misst, wie stark die Vorhersage des Modells von den wahren Labels abweicht. Durch **Gradientenabstieg** werden die Modellparameter \(\theta\) iterativ so angepasst, dass die Fehler minimiert werden.  
+
+Für Klassifikationsaufgaben mit mehreren Klassen – wie in dieser Arbeit (Gliom, Meningeom, Hypophysenadenom, Kein Tumor) – wird häufig die **Kreuzentropie (CrossEntropyLoss)** verwendet, die besonders empfindlich auf Fehlklassifikationen reagiert und Wahrscheinlichkeiten zuverlässig optimiert (@bishop2006pattern).
+
+::: {.callout-note title="Einordnung im Kontext" icon="info"}
+- **Input:** Bilddaten (Pixelwerte)  
+- **Output:** Klassenzugehörigkeit (Tumorart oder „kein Tumor“)  
+- **Lernprinzip:** Minimierung der Kreuzentropie über Trainingsdaten  
+- **Evaluation:** Vorhersagen werden mit Metriken wie Accuracy oder F1 überprüft  
+:::
+
+Im Unterschied zum **unüberwachten Lernen** (*Unsupervised Learning*), das Strukturen in unbeschrifteten Daten erkennt, ist das überwachte Lernen auf annotierte Daten angewiesen. Gerade in der medizinischen Bildanalyse ist die Qualität der Annotationen entscheidend, da sie den Lernerfolg direkt bestimmen (@lecun2015deep).
+
+## Neuronale Netze (allgemein)
+
+Ein **neuronales Netz** ist ein mathematisches Modell, das von der Struktur biologischer Nervenzellen inspiriert ist. Es besteht aus **Schichten (Layers)** von künstlichen Neuronen, die Eingaben verarbeiten, gewichten und über Aktivierungsfunktionen nichtlinear transformieren. Auf diese Weise können auch komplexe Muster und Abhängigkeiten in den Daten modelliert werden (@goodfellow2016deep).
+
+Die Grundbausteine sind:
+
+- **Eingabeschicht (Input Layer):** Nimmt die Rohdaten auf, z. B. die Pixelwerte eines MRT-Bildes.  
+- **Verborgene Schichten (Hidden Layers):** Transformieren die Daten durch lineare Kombinationen und nichtlineare Aktivierungen.  
+- **Ausgabeschicht (Output Layer):** Liefert die Vorhersage, z. B. die Klassenzugehörigkeit eines Tumors.  
+Eine zentrale Rolle spielen **Aktivierungsfunktionen** (z. B. ReLU, Sigmoid, Softmax), die Nichtlinearitäten einführen und damit sicherstellen, dass das Netz mehr als nur lineare Beziehungen abbilden kann.  
+
+Das Training erfolgt über **Rückpropagation (Backpropagation)**: Fehler aus der Verlustfunktion werden über die Schichten zurückgeleitet, um die Gewichte mittels Gradientenverfahren zu aktualisieren (@rumelhart1986learning).
+
+::: {.callout-note title="Einordnung im Kontext" icon="info"}
+- **Input:** MRT-Bild als Vektor von Pixelwerten  
+- **Hidden Layers:** Extraktion abstrakter Merkmale (z. B. Kanten, Texturen)  
+- **Output:** Wahrscheinlichkeitsverteilung über die vier Klassen (Gliom, Meningeom, Hypophyse, Kein Tumor)  
+- **Training:** Optimierung der Gewichte durch Backpropagation und Gradientenabstieg  
+:::
+
+## Convolutional Neural Networks (CNNs)
+
+**Convolutional Neural Networks (CNNs)** sind eine spezialisierte Form neuronaler Netze, die für Bilddaten optimiert sind. Anstatt alle Pixelwerte direkt mit jeder Neuronenschicht zu verknüpfen, nutzen CNNs **Faltungsschichten (Convolutional Layers)**, die kleine Bildausschnitte („Filter“ oder „Kernels“) systematisch auswerten. Dadurch können lokale Muster wie Kanten, Texturen und Formen erkannt werden (@lecun1998gradient).
+
+Die zentralen Bausteine eines CNNs sind:
+- **Convolutional Layer:** Extrahiert lokale Merkmale aus Bildausschnitten durch Gewichtsteilung und lokale Verknüpfung.  
+- **Pooling Layer:** Reduziert die Dimensionen (z. B. durch Max-Pooling) und macht das Modell robuster gegenüber Verschiebungen.  
+- **Aktivierungen:** Nichtlineare Funktionen wie ReLU oder SiLU sorgen dafür, dass komplexe Muster erlernt werden können.  
+- **Fully Connected Layer oder Global Average Pooling:** Am Ende werden die Merkmale zu einer Klassenvorhersage verdichtet.  
+
+Ein Vorteil von CNNs liegt in der **Translation-Invarianz**: Ein erkanntes Muster (z. B. ein Tumorrand) wird unabhängig von seiner Position im Bild verarbeitet.  
+
+::: {.callout-note title="Einordnung im Kontext" icon="info"}
+- **Input:** MRT-Bild (z. B. 224×224 Pixel)  
+- **Conv Layer:** Erkennung lokaler Muster wie Kanten oder Texturen  
+- **Pooling Layer:** Verdichtung und Robustheit gegenüber Position  
+- **Output Layer:** Vorhersage der Tumorklasse (4 Klassen in diesem Projekt)  
+- **Effizienz:** Durch Gewichtsteilung deutlich weniger Parameter als bei voll verbundenen Netzen  
+:::
+
+## Transfer Learning
+
+**Transfer Learning** beschreibt den Ansatz, ein bereits auf einem großen Datensatz (z. B. ImageNet mit über 1 Mio. Bildern) vortrainiertes Modell auf eine neue Aufgabe anzupassen. Der Vorteil liegt darin, dass die frühen Schichten des Netzes bereits **generische visuelle Merkmale** gelernt haben (Kanten, Texturen, Formen), die auch in anderen Bilddomänen nützlich sind (@yosinski2014transfer).  
+
+Statt ein Modell von Grund auf neu zu trainieren („from scratch“), wird also Wissen aus einer Voraufgabe übernommen. Dies ist besonders wertvoll in Szenarien wie der medizinischen Bildanalyse, wo nur vergleichsweise wenige annotierte Daten zur Verfügung stehen.
+
+Es lassen sich zwei Hauptstrategien unterscheiden:
+
+1. **Head-Only Training (Feature Extraction):**  
+   Das vortrainierte **Backbone** bleibt eingefroren, nur der neu hinzugefügte Klassifikationskopf wird trainiert. Vorteil: schnelles, stabiles Training mit geringerem Overfitting-Risiko.  
+
+2. **Fine-Tuning:**  
+   Zusätzlich zu den Kopf-Schichten werden ausgewählte späte Schichten des Backbones freigegeben und mit kleiner Lernrate weiter trainiert. Dadurch kann das Modell spezifische Muster der neuen Domäne (z. B. MRT-Tumorstrukturen) erlernen. Nachteil: höheres Risiko für Overfitting, daher oft kombiniert mit **Early Stopping** und **kleineren Lernraten**.  
+
+::: {.callout-note title="Einordnung im Kontext" icon="info"}
+- **Ausgangsbasis:** Vortrainiertes EfficientNet-B0 auf ImageNet  
+- **Head-Only:** Anpassung des Klassifikationskopfes an 4 Klassen (Tumortypen)  
+- **Fine-Tuning:** Freigabe später Blöcke für MRT-spezifische Muster  
+- **Vorteil:** Höhere Performance bei kleiner Datenmenge, weniger Bedarf an Rechenressourcen  
+:::
+
+# Datenbeschreibung
+
+## Quelle und Datenstruktur
+
+- **Quelle:** Kaggle Dataset „Brain Tumor MRI Dataset“  
+- **URL:** https://www.kaggle.com/datasets/masoudnickparvar/brain-tumor-mri-dataset
+- **Lizenz:** Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)  
+- **Struktur:** Bilder liegen als **JPEG-Dateien** in Unterordnern, die jeweils einer Klasse entsprechen.  
+- **Ordner:**  
+  - `Training/` (für Modelltraining und Validierung)  
+  - `Testing/` (für finale unabhängige Evaluation)
+
+## Datensatzbeschreibung
+
+Für die vorliegende Arbeit wurde ein öffentlich zugänglicher Datensatz von der Plattform [Kaggle](https://www.kaggle.com/datasets/masoudnickparvar/brain-tumor-mri-dataset) herangezogen. Es handelt sich um das *Brain Tumor MRI Dataset*, welches von **Masoud Nickparvar** bereitgestellt und unter der Lizenz **CC BY-NC-SA 4.0** veröffentlicht wurde. Der Datensatz umfasst Magnetresonanztomographie-(MRT)-Aufnahmen von Gehirnen und wurde speziell zur Unterstützung von Forschungs- und Entwicklungsarbeiten im Bereich der medizinischen Bildklassifikation erstellt.  
+
+::: {.callout-note}
+#### Magnetresonanztomographie (MRT)
+MRT ist ein bildgebendes Verfahren in der Medizin, das ohne Röntgenstrahlung arbeitet und besonders gut geeignet ist, Weichteilgewebe wie Gehirnstrukturen sichtbar zu machen. MRT-Aufnahmen bilden die Grundlage vieler KI-Anwendungen in der Radiologie.
+:::
+
+Die Daten sind in zwei Hauptbereiche gegliedert: einen **Trainingsordner** und einen **Testordner**. Diese Aufteilung ermöglicht die Entwicklung und Validierung von Klassifikationsmodellen unter standardisierten Bedingungen. Jedes Bild ist dabei einer von vier definierten Klassen zugeordnet:
+
+```{python}
+from torchvision import datasets, transforms
+from pathlib import Path
+
+IMG_SIZE = 224
+
+train_tf = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomRotation(10),
+    transforms.ToTensor(),
+    transforms.Normalize([0.5]*3, [0.5]*3),
+])
+
+BASE = Path.cwd().resolve().parent if Path.cwd().name=="notebooks" else Path.cwd()
+DATA_DIR = BASE / "data"
+TRAIN_DIR = DATA_DIR / "Training"
+
+train_ds = datasets.ImageFolder(TRAIN_DIR, transform=train_tf)
+
+for i in range (len(train_ds.classes)):
+    print("-", train_ds.classes[i])
+```
+
+Der für das Training des Klassifikationsmodells verwendete MRT-Datensatz umfasst drei distinkte pathologische Klassen sowie eine Kontrollklasse ohne Befund. Bei den pathologischen Klassen handelt es sich um das **Glioma**, einen Tumor, der aus Gliazellen entsteht und typischerweise eine hohe Heterogenität aufweist, sowie das **Meningioma**, welches von den Hirnhäuten (Meningen) ausgeht. Die dritte Tumorklasse ist das **Pituitary** (Hypophysenadenom), das in der Region der Hypophyse lokalisiert ist. Als **Kontrollgruppe** dienen unauffällige MRT-Aufnahmen (notumor), die Gehirne ohne pathologische Befunde darstellen und es dem Modell ermöglichen, zwischen gesundem und erkranktem Gewebe zu differenzieren.
+
+Durch diese klare Klasseneinteilung eignet sich der Datensatz hervorragend für die Entwicklung und Evaluation von **CNNs** zur automatisierten Erkennung von Gehirntumoren.
+
+## Datenumfang
+
+Der für diese Arbeit verwendete Datensatz umfasst insgesamt **7 023 MRT-Bilder** des Gehirns, der in die vier oben genannten Klassen annäherend gleichmäßig unterteilt ist. Die Datenmenge verteilt sich auf zwei Bereiche, mit denen eine ausreichend große Datenbasis zur Verfügung steht, um sowohl robuste Modelle zu trainieren als auch eine aussagekräftige Evaluation im Testset vorzunehmen:   
+
+```{python}
+TEST_DIR = DATA_DIR / "Testing"
+
+val_tf = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.5]*3, [0.5]*3),
+])
+
+val_ds = datasets.ImageFolder(TEST_DIR,  transform=val_tf)
+
+print("Train: ", len(train_ds), "Bilddaten")
+print("Test: ", len(val_ds), "Bilddaten")
+``` 
+
+Ein wichtiger Aspekt ist die **Klassenverteilung**: Die Abbildung unten zeigt die Anzahl der Bilder pro Klasse im Trainings- und Testset. Deutlich zu erkennen ist, dass die Verteilung relativ **ausgeglichen** ist, d. h. keine Klasse ist stark unter- oder überrepräsentiert.   
+
+```{python}
+#| echo: false
+from collections import Counter
+from IPython.display import display, Markdown
+
+# Anzahl der Bilder pro Klasse zählen
+train_counts = Counter(train_ds.targets)
+test_counts  = Counter(val_ds.targets)
+
+for i in range(len(train_ds.classes)):
+    total_count = train_counts[i] + test_counts[i]
+
+    display(Markdown(f"**{train_ds.classes[i]}** – {total_count}"))
+```
+
+Der Datensatz weist eine relativ ausgewogene Klassenverteilung auf, was das Risiko von Trainingsverzerrungen minimiert. Wie die darunterliegende Abbildung zur Klassenverteilung zeigt, sind die Tumorklassen **Glioma** und **Meningioma** mit jeweils etwa 1.600 Bildern im gesamten Datensatz annähernd gleich stark vertreten. Die Klasse der **Pituitary** (Hypophysenadenome) ist mit rund 1.700 Aufnahmen ebenfalls stark repräsentiert, wobei die geringfügige Abweichung zu den anderen Tumorklassen vernachlässigbar ist. Die **Kontrollklasse** No Tumor, die Aufnahmen ohne pathologische Befunde enthält, ist mit circa 2.000 Bildern am stärksten vertreten. Die Grafik verdeutlicht zudem, dass der Großteil der Daten für das Training (blaue Balken) verwendet wird, während ein kleinerer, aber proportional verteilter Teil für den Test (orange Balken) reserviert ist. Diese ausgewogene Verteilung stellt sicher, dass das Modell eine robuste Fähigkeit zur Unterscheidung zwischen gesundem und pathologischem Gewebe entwickeln kann.
+
+![Klassenverteilung der Bilddaten](figures/class_distribution.png){#fig-distribution-class fig-cap="Verteilung der Bilder auf die jeweiligen Klassen"}
+
+::: {.callout-note title="Klassenbalance" icon="info"}
+Eine ausgewogene Verteilung der Klassen reduziert das Risiko von **Klassenungleichgewicht** (class imbalance). Wären einzelne Klassen stark unterrepräsentiert, würde das Modell bevorzugt Mehrheitsklassen lernen. Deshalb ist es wichtig, nicht nur Accuracy, sondern auch wie im späteren Verlauf gezeigt den **macro-F1** zu berichten.
+:::
+
+Eine ausgewogene Klassenverteilung ist ein zentraler Faktor für die **Leistungsfähigkeit** von Machine-Learning-Modellen. Liegt eine starke **Klassenungleichgewicht** vor, besteht die Gefahr, dass das Modell vor allem die **Mehrheitsklasse** korrekt vorhersagt, während die **Minderheitsklasse** systematisch vernachlässigt wird. Dies führt zu einer Verzerrung im Training und kann die Validität der Ergebnisse erheblich beeinträchtigen. Ein Modell, das nur die **Mehrheitsklasse** korrekt klassifiziert, würde in einem solchen Szenario zu **falsch-negativen Diagnosen** führen. Durch eine balancierte Verteilung der Klassen wird hingegen sichergestellt, dass das Modell beide Klassen mit vergleichbarer Aufmerksamkeit verarbeitet. Dies bildet die Grundlage für eine robuste **Generalisierung** auf neue, bisher ungesehene Daten und trägt somit direkt zur klinischen **Verlässlichkeit** und praktischen **Anwendbarkeit** der Ergebnisse bei. 
+
+## Bildformate und Vorverarbeitung
+
+Die verwendeten MRT-Aufnahmen liegen im **JPEG-Format** vor. Dabei handelt es sich um ein gängiges Bildformat zur Kompression und Speicherung von Bilddaten. Die Auflösung der Bilder ist nicht einheitlich, beträgt jedoch in den meisten Fällen **512×512 Pixel**.  
+
+Obwohl MRT-Bilder ursprünglich in **Graustufen** vorliegen (also nur Helligkeitswerte enthalten), sind die Dateien in drei **Farbkanälen (RGB)** gespeichert. Dies bedeutet, dass die Graustufeninformationen auf die drei Kanäle „Rot“, „Grün“ und „Blau“ dupliziert werden. Dieser Schritt ist wichtig, da viele vortrainierte Modelle im Bereich des **Transfer Learning** (z. B. ImageNet-Modelle) standardmäßig RGB-Bilder erwarten. *Transfer Learning* bezeichnet dabei die Wiederverwendung von Modellen, die bereits auf großen, allgemeinen Datensätzen trainiert wurden, um sie für spezifische Aufgaben wie die Tumorerkennung effizient anzupassen.
+
+### Vorverarbeitungsschritte
+
+Damit die Bilder für das Training in einem **Deep-Learning-Modell** genutzt werden können, werden mehrere Vorverarbeitungsschritte durchgeführt:
+
+#### Größenanpassung (Resize)
+
+Alle Bilder werden vor dem Training auf eine einheitliche Auflösung von **224×224 Pixeln** skaliert. Dieser Schritt ist notwendig, weil neuronale Netze in der Bildverarbeitung eine **feste Eingabegröße** erwarten, sie können also nur dann effizient lernen, wenn alle Bilder gleich groß sind. Ohne diese Vereinheitlichung wäre ein Training technisch nicht möglich, da die Dimensionen der Eingabedaten nicht zueinander passen würden. Die gewählte Größe orientiert sich an den Anforderungen des eingesetzten Modells **EfficientNet-B0**, das speziell für Eingaben mit dieser Auflösung optimiert wurde. Durch die feste Vorgabe wird sichergestellt, dass die Architektur ihre **vorgefertigten Gewichte** (Pretrained Weights) korrekt anwenden kann, wenn ein Transfer Learning durchgeführt wird.
+
+Darüber hinaus hat die Wahl einer vergleichsweise kleinen Auflösung wie 224×224 Pixel noch einen weiteren Vorteil: Sie reduziert den **Rechenaufwand** und den **Speicherverbrauch** beim Training, ohne die Bildinformationen so stark zu verfälschen, dass wichtige Merkmale verloren gehen. Damit stellt die Größenanpassung einen wichtigen Kompromiss zwischen **Datenqualität** und **Effizienz** dar. 
+
+#### Normalisierung
+
+Die ursprünglichen **Pixelwerte** der Bilder liegen in einem Wertebereich von **0 bis 255**, wobei 0 für Schwarz und 255 für Weiß steht (mit den Zwischenwerten als Graustufen oder Farbintensitäten). Diese Rohwerte sind jedoch für ein neuronales Netz schwer zu verarbeiten, da die Skala sehr groß ist und die Unterschiede zwischen den Werten unterschiedlich stark ins Gewicht fallen können.
+
+Um dies zu vermeiden, werden die Pixelwerte zunächst in den kleineren Bereich **[0, 1]** umgerechnet, indem jeder Wert durch 255 geteilt wird. Auf diese Weise liegen alle Eingaben auf einer vergleichbaren Skala, was das Training stabiler und effizienter macht. Im nächsten Schritt erfolgt eine **Mittelwert- und Standardabweichungs-Normalisierung**. Durch diese Normalisierung werden die Eingabedaten in einen **standardisierten Wertebereich** transformiert. Das sorgt dafür, dass die **Gewichte der Neuronen im Modell schneller angepasst werden können** und der Optimierungsprozess nicht durch große Unterschiede in den Skalen einzelner Eingaben gebremst wird. Praktisch bedeutet das: Das Modell lernt **schneller, stabiler und oft auch genauer**, weil es weniger anfällig für extreme Werte ist.
+
+::: {.callout-note title="Mittelwert und Standardabweichung" icon="info"}
+Der **Mittelwert (μ)** gibt an, welchen durchschnittlichen Wert eine Datenmenge hat. Er beschreibt also die „zentrale Lage“ der Daten.  
+Die **Standardabweichung (σ)** hingegen misst die **Streuung** der Daten um diesen Mittelwert. Ein kleiner σ-Wert bedeutet, dass die Daten eng um den Mittelwert liegen, ein großer σ-Wert zeigt an, dass die Werte stark variieren.  
+
+Bei der **Normalisierung** von Bildern werden die Pixelwerte so transformiert, dass sie einen Mittelwert von 0 und eine Standardabweichung von 1 haben. Dies führt zu einem standardisierten Wertebereich, wodurch **Neuronale Netze stabiler und schneller lernen**, da alle Eingaben auf vergleichbare Skalen gebracht werden.  
+:::
+
+#### Datenaugmentation (Data Augmentation)
+
+Ein entscheidender Schritt im Trainingsprozess von Deep-Learning-Modellen ist die Anwendung von **Datenaugmentation**, also der künstlichen Erweiterung des Datensatzes durch gezielte Transformationen. Ziel ist es, die vorhandenen Trainingsbilder so zu variieren, dass das Modell lernt, **robust gegenüber realistischen Veränderungen** zu werden und nicht nur die exakten Trainingsbeispiele „auswendig lernt“. Besonders in der medizinischen Bildverarbeitung, wo Datensätze häufig begrenzt sind, ist dieser Ansatz unverzichtbar, um eine zuverlässige Generalisierung zu erreichen.  
+
+In unserer Arbeit kamen dabei vor allem drei Transformationen zum Einsatz:  
+
+- **Horizontales Spiegeln der Bilder**, um das Modell unempfindlicher gegenüber der Lage und Orientierung der Aufnahmen zu machen.  
+- **Leichte Rotationen**, die eine Variation in der Position der anatomischen Strukturen erzeugen und dadurch verhindern, dass das Modell zu stark auf eine bestimmte Ausrichtung fixiert ist.  
+- **Anpassungen von Helligkeit und Kontrast**, mit denen Unterschiede in der Aufnahmequalität simuliert werden, wie sie in der klinischen Praxis durch verschiedene Scanner oder Sequenzeinstellungen entstehen können.  
+
+```{python}
+#| eval: false
+# Im Modellcode wird die Datenaugmentierung wie folgt auf Trainings / Testdaten umgesetzt:
+
+train_tf = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomRotation(10),
+    transforms.ToTensor(),
+    transforms.Normalize([0.5]*3, [0.5]*3),
+])
+val_tf = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.5]*3, [0.5]*3),
+])
+```
+
+Diese Methoden verändern die wesentlichen Bildinformationen nicht, sondern sorgen dafür, dass das Modell dieselben Merkmale unter verschiedenen Bedingungen erkennen kann. Dadurch steigt die **Vielfalt der Trainingsdaten**, ohne dass neue Daten gesammelt werden müssen. Im Training führt dies zu einer stärkeren Robustheit, da das Modell bei jedem Durchlauf leicht abgewandelte Versionen derselben Bilder sieht. Gleichzeitig sinkt das Risiko des **Overfittings**, da das Netz gezwungen ist, sich auf stabile und generalisierbare Muster zu konzentrieren.  
+
+::: {.callout-note title="Data Augmentation" icon="info"}
+Unter **Data Augmentation** versteht man allgemein die künstliche Erweiterung eines Datensatzes durch Transformationen wie Spiegelungen, Rotationen oder Kontraständerungen. Der entscheidende Vorteil liegt darin, dass Modelle dadurch lernen, **variationsrobust** zu werden und ihre **Generaliserungsfähigkeit** deutlich verbessert wird. Gerade im medizinischen Kontext ermöglicht dies, dass Modelle zuverlässig mit Aufnahmen arbeiten können, die sich in Qualität, Ausrichtung oder Helligkeit von den Trainingsdaten unterscheiden.  
+:::
+
+## Zielvariable und Features
+
+Im Rahmen der Bildklassifikation werden zwei zentrale Konzepte unterschieden: die **Features** (Eingabedaten) und die **Zielvariable** (Ausgabedaten, die das Modell vorhersagen soll).  
+
+### Features
+
+Die Features des Datensatzes basieren auf den **Pixelintensitäten der vorverarbeiteten MRT-Bilder**, nach dem Resize auf **224 × 224 Pixel** und der Normalisierung (Wertebereich [0, 1]), mit drei Farbkanälen (RGB). Dies führt zu einer Eingabestruktur von **224 × 224 × 3**, also rund **150528 Merkmalen** pro Bild. Jeder Pixel steht also für die Helligkeitsintensität an einer bestimmten Position. Die dreikanalige Darstellung ermöglicht den Einsatz vortrainierter Modelle, die ursprünglich auf RGB-Bildern trainiert wurden, und unterstützt somit **Transfer Learning**.
+
+In neuronalen Netzen, besonders in **Convolutional Neural Networks (CNNs)**, werden diese rohen Pixelwerte nicht isoliert, sondern durch **aufeinanderfolgende Convolutional Layers** in abstraktere Merkmalsrepräsentationen überführt. Bereits in frühen Schichten lernen die Filter, grundlegende Bildmerkmale wie Konturen oder Formen zu erkennen, während tieferliegende Schichten zunehmend komplexere, semantische Strukturen erfassen können. Solche hierarchischen Repräsentationen sind essenziell, damit das Modell relevante anatomische Muster im Gehirn zuverlässig identifizieren kann.
+
+### Zielvariable
+
+Die Zielvariable ist die **Klassenzugehörigkeit** des jeweiligen MRT-Bildes. Konkret handelt es sich um eine **kategoriale Variable** mit vier klar abgegrenzten Ausprägungen: *Glioma*, *Meningioma*, *Pituitary* und *No Tumor*. Solche kategorialen Größen stehen im Gegensatz zu kontinuierlichen Variablen (z. B. Gewicht oder Temperatur), da sie nur endlich viele nicht überlappende Werte annehmen können.
+
+Das übergeordnete Ziel des Modells besteht darin, eine eindeutige Zuordnung der Bildfeatures zu den Tumorklassen zu erlernen. Damit wird die Fähigkeit trainiert, anhand der Bilddaten vorliegende Tumormuster korrekt einer der vier Kategorien zuzuordnen.
+
+### Labelkodierung
+
+Damit die kategorialen Klassen in einem neuronalen Netzwerk verarbeitet werden können, werden sie zunächst durch eine **Labelkodierung** in ganze Zahlen überführt (z. B. Glioma → 0, Meningioma → 1, Pituitary → 2, No Tumor → 3). Dies ist notwendig, da neuronale Modelle numerische Eingaben erwarten und mit Zeichenketten nicht arbeiten können.
+
+Anschließend erfolgt eine Umwandlung in eine **One-Hot-Encoding**-Darstellung. Dabei wird jede Klasse durch einen Vektor repräsentiert, der in der Position der Klasse eine 1 enthält und sonst ausschließlich Nullen (z. B. [1, 0, 0, 0] für Glioma). Diese Kodierungsform sorgt dafür, dass das Modell keine künstliche Rangfolge zwischen Klassen impliziert, etwa dass Klasse 2 „größer“ oder „wichtiger“ ist als Klasse 1. One-Hot-Encoding ist besonders bei nominalen (nicht ordnungsgemäßen) Kategorien vorteilhaft, um ungewollte numerische Relationen zu vermeiden.
+
+::: {.callout-info title="One-Hot-Encoding" icon="info"}
+One-Hot-Encoding positioniert jede Klasse als eigenständige **binäre Variable**, wobei genau eine davon „aktiv“ (1) ist und alle anderen „inaktiv“ (0). Mathematisch entspricht das der Zuordnung zu **Einheitsvektoren** in einem mehrdimensionalen Raum, jede Klasse wird unabhängig voneinander und ohne implizite Reihenfolge dargestellt. Diese Darstellung ist besonders wichtig, um Modelle keine falsche Ordinalität bei nominalen Klassen erkennen zu lassen.
+:::
+
+## Datenaufteilung: Training, Validierung, Test
+
+Um ein robustes Klassifikationsmodell zu entwickeln, ist eine sorgfältige Aufteilung des Datensatzes essenziell. Primär dient dies dazu, sicherzustellen, dass das Modell nicht nur auf bereits gesehene Trainingsdaten reagiert, sondern ebenso auf neue, unbekannte Daten verlässliche Ergebnisse liefert.
+
+Im hier verwendeten Setup wurde der offizielle Trainingsordner intern weiter differenziert. Etwa 80 % der Bilder bilden das eigentliche **Trainingsset**, in dem das Modell seine Gewichtungen lernt, um Gemeinsamkeiten und Unterschiede zwischen den Klassen zu erkennen. Die restlichen 20 % fließen in ein **Validierungsset**, das dem Modell während des Trainings, ohne dass es diese Bilder sieht, einen objektiven Blick auf seine Zwischenleistungen ermöglicht. Diese Validierung erleichtert die Optimierung von Hyperparametern wie Lernrate, Batchgröße oder Trainingsdauer, ohne die Testdaten heranzuziehen.
+
+Der offizielle Testordner bleibt während des gesamten Entwicklungsprozesses unangetastet. Erst nach Abschluss aller Trainings- und Validierungsphasen wird das **Testset** eingesetzt, um die Generalisierungsfähigkeit vollkommen unvoreingenommen zu bewerten. Dieser Ablauf gewährleistet, dass die finale Leistung des Modells weder durch Hyperparameter-Optimierung noch durch Überanpassung an bekannte Trainings- oder Validierungsdaten beeinflusst ist. Solch eine strukturierte Aufteilung ist zentral, um **Overfitting** zu verhindern und zugleich eine realistische Einschätzung der Modellleistung zu erhalten 
+Diese Vorgehensweise stellt sicher, dass das Modell nicht nur auf den Trainingsdaten zuverlässig arbeitet, sondern auch in realen Anwendungsszenarien stabil und vertrauenswürdig bleibt und Generalisierungsfähig ist. 
+
+### Warum ist die Validierung notwendig?  
+Die **Validierung** ist ein entscheidender Zwischenschritt, ohne **Validierungsdaten** könnte man die **Hyperparameter** nur auf Basis der Trainingsleistung abstimmen. Dies würde jedoch oft zu einem Modell führen, das zwar die Trainingsdaten sehr gut beherrscht, aber auf **neuen Daten** schlechter abschneidet (**Overfitting**). Durch die Validierung wird sichergestellt, dass die Optimierung des Modells auf Daten erfolgt die es noch nicht gesehen hat, ohne Informationen aus dem finalen Testset zu **"leaken"** (Data Leakage). 
+
+::: {.callout-info title="Data Leakage" icon="info"}
+Als **Data Leakage** bezeichnet man den unbeabsichtigten Informationsfluss aus dem Testset in das Training oder die Validierung. Dies kann beispielsweise geschehen, wenn Bilder aus demselben Patienten versehentlich sowohl im Training als auch im Test auftauchen oder wenn das Testset zu früh zur Abstimmung von Hyperparametern genutzt wird.  
+Die Folge sind **unrealistisch hohe Leistungswerte**, die in der Praxis nicht reproduzierbar sind.  
+Um dies zu vermeiden, wurde streng darauf geachtet, dass das Testset erst am Ende des Prozesses einmalig verwendet wird.
+:::
+
+## Beispielbilder
+
+Um ein besseres Gefühl für die Datenbasis zu vermitteln, werden im Folgenden je ein exemplarisches MRT-Bild pro Klasse dargestellt.  
+
+Die Abbildungen zeigen typische Aufnahmen für die vier Klassenzugehörigkeiten: **Glioma**, **Meningioma**, **Pituitary** sowie **No Tumor** (keine Auffälligkeiten). Während die Tumorklassen Veränderungen im Gewebe aufweisen, dient die *No Tumor*-Klasse als wichtige Referenz für gesunde Gehirnstrukturen.  
+
+::: {layout-ncol=2}
+![](figures/Te-gl_0030.jpg){fig-alt="glioma" width="100%"}
+*Glioma – ein Tumor, der aus Gliazellen entsteht und häufig eine unregelmäßige Form aufweist.*
+
+![](figures/Te-me_0011.jpg){fig-alt="meningioma" width="100%"}
+*Meningioma – Tumor, der von den Hirnhäuten (Meningen) ausgeht und meist klar abgegrenzt ist.*
+
+![](figures/Te-pi_0011.jpg){fig-alt="pituitary" width="100%"}
+*Pituitary – Tumor in der Region der Hypophyse, oft zentral im Bild erkennbar.*
+
+![](figures/Te-no_0011.jpg){fig-alt="no tumor" width="100%"}
+*No Tumor – Aufnahme ohne pathologische Befunde, dient als Kontrollklasse.*
+:::
+
+Die exemplarischen Bilder verdeutlichen, dass die Unterscheidung der Tumorklassen für das menschliche Auge bereits anspruchsvoll sein kann, insbesondere bei ähnlichen Formen oder geringem Kontrast. Hier zeigt sich der Mehrwert automatisierter Verfahren, die feinste Muster und Unterschiede erkennen und systematisch in die Klassifikation einbeziehen können.
+
+# Methodik
+
+In diesem Kapitel wird die methodische Vorgehensweise beschrieben, die zur Entwicklung, zum Training und zur Evaluation des Klassifikationsmodells angewandt wurde. Ziel ist es, die Architektur des Modells, die Trainingsstrategie sowie die eingesetzten Analysemethoden transparent und nachvollziehbar darzustellen.
+
+## Datenaufbereitung
+
+Die wesentlichen Vorverarbeitungsschritte – Größenanpassung, Normalisierung und Datenaugmentation – wurden bereits in Kapitel 3 detailliert beschrieben. An dieser Stelle erfolgt lediglich eine kurze Zusammenfassung: Alle Bilder wurden auf eine einheitliche Auflösung von 224×224 Pixeln gebracht, die Pixelwerte normalisiert und durch geeignete Transformationen wie Spiegelungen, Rotationen oder Kontrastanpassungen variiert. Diese Maßnahmen sind notwendig, um die Daten für das Training nutzbar zu machen und die Generalisierungsfähigkeit des Modells zu verbessern.
+
+## Modellarchitektur
+
+Für die Klassifikation der MRT-Aufnahmen wir das **EfficientNet-B0** verwendet als Basismodell und adaptieren es mittels **Transfer Learning** auf vier Zielklassen. EfficientNet-B0 erreicht eine günstige Balance aus Genauigkeit und Rechenaufwand durch drei Konstruktionsprinzipien: Erstens setzen seine Faltungsblöcke auf **MBConv** (*Mobile Inverted Bottleneck Convolutions*), die mit **depthwise-separablen Convolutions** Parameter- und FLOP-Kosten deutlich reduzieren, indem Kanäle zunächst getrennt gefaltet und anschließend wieder kombiniert werden. Zweitens nutzt die Architektur **Squeeze-and-Excitation**-Module, die Kanäle adaptiv gewichten und damit relevante Muster verstärken – hilfreich für feine, kontrastarme Strukturen in medizinischen Bildern. Drittens skaliert EfficientNet **Tiefe**, **Breite** und **Eingaberesolution** gemeinsam (*compound scaling*), wodurch bei gegebener Ressourcenbudgetierung ein besonders gutes Genauigkeit-/Aufwand-Verhältnis erzielt wird; **B0** ist die leichtgewichtigste Variante dieser Familie.
+
+Im Aufbau wird ein vortrainiertes EfficientNet-B0 geladen, das die gelernten Gewichte übernimmt und lediglich den Klassifikationskopf auf vier Ausgänge anpasst. Das Modell wird auf das Zielgerät verschoben und speichereffizient im **channels_last**-Format betrieben. Anschließend wird Backbone eingefroren und zunächst nur den Kopf (Head-Only-Phase) trainiert. Der folgende Auszug stammt direkt aus dem Notebook und zeigt diesen initialen Architektur- und Anpassungsschritt inklusive Verlustfunktion und Optimierer-Setup:
+
+```{python}
+#| eval: false
+import timm
+from torch import nn
+
+NUM_CLASSES = len(train_ds.classes)
+model = timm.create_model("efficientnet_b0", pretrained=True, num_classes=NUM_CLASSES)
+model = model.to(device).to(memory_format=torch.channels_last)
+
+# Backbone freeze (Head-Only)
+for name, p in model.named_parameters():
+    if "classifier" not in name:
+        p.requires_grad = False
+
+criterion = nn.CrossEntropyLoss()
+```
+Nach der **Head-Only-Phase** wird der Backbone-Freeze (Einfrierung) aufgehoben und die letzten Blöcke der Architektur gemeinsam mit dem Klassifikationskopf mittels Fine-Tuning weitertrainiert. Dadurch können auch höherstufige Merkmalsrepräsentationen an die MRT-Domäne angepasst werden, ohne die Stabilität des gesamten Modells zu gefährden. Der folgende Notebook-Ausschnitt zeigt das selektive Unfreezing der letzten EfficientNet-Blöcke sowie die Optimierer-Initialisierung für das Fine-Tuning:
+
+```{python}
+#| eval: false
+# Training FINE-TUNING
+from tqdm.auto import tqdm
+import pandas as pd
+import torch
+
+# Getting Head-only Modell
+model.load_state_dict(torch.load(MODEL_DIR / "effb0_best_head.pt", map_location=device))
+model.to(device).eval()
+
+# Unfreeze: last Stages + Head (EfficientNet-B0 / timm)
+for name, p in model.named_parameters():
+    if "blocks.5" in name or "blocks.6" in name or "classifier" in name:
+        p.requires_grad = True 
+
+# LR-Schedular
+optimizer = torch.optim.SGD(
+```
+
+Während des Vorwärtslaufs erzeugt das Modell **Logits** (nicht-normierte Ausgaben). Für Auswertungen, Visualisierungen und manche Metriken werden diese in **Wahrscheinlichkeiten** umgewandelt, indem eine Softmax-Normalisierung entlang der Klassenachse angewandt wird. Der folgende Notebook-Code zeigt exemplarisch die Transformation:
+
+```{python}
+#| eval: false
+# ROC & PR (One-vs-Rest) – Wahrscheinlichkeiten aus Logits
+import torch
+probs = torch.softmax(logits, dim=1).cpu().numpy()
+```
+
+Zusammenfassend wird ein ressourcenschonendes, vortrainiertes EfficientNet-B0-Modell eingesetzt, dessen Klassifikationskopf für die gegebene Aufgabenstellung angepasst wird. In einem ersten Schritt erfolgt das Training ausschließlich der letzten Schicht, bevor in einer zweiten Phase ausgewählte späte Blöcke des Netzes feingetunt werden. Dieses zweistufige Vorgehen verbindet die Stabilität der in den vortrainierten Gewichten enthaltenen niedrigeren und mittleren Merkmalsebenen mit der domänenspezifischen Anpassungsfähigkeit der höheren Netzebenen und stellt damit ein in der medizinischen Bildanalyse etabliertes und effizientes Verfahren dar.
+
+## Trainingsstrategie
+
+Die Trainingsstrategie folgt einem **zweistufigen Vorgehen**, das in der medizinischen Bildanalyse mit **Transfer Learning** etabliert ist. Zunächst wird ausschließlich der neu hinzugefügte Klassifikationskopf trainiert („Head-Only Training“). Anschließend erfolgt ein kontrolliertes **Fine-Tuning** ausgewählter tieferer Schichten des vortrainierten Basisnetzwerks.
+
+Das **Head-Only Training** nutzt die bereits in großen Datensätzen (z. B. ImageNet) gelernten Repräsentationen der unteren und mittleren Netzwerkebenen. Diese Ebenen erfassen robuste visuelle Grundmuster wie **Kanten, Texturen und Formen**, die auch in medizinischen MRT-Bildern relevant sind . Durch die **Fixierung** dieser Gewichte wird verhindert, dass zu Beginn des Trainings fragile, domänenspezifische Muster **übermäßig angepasst werden**. Stattdessen konzentriert sich das Modell auf die Anpassung des Klassifikationskopfes, wodurch eine stabile Konvergenz bei reduzierter Rechenlast ermöglicht wird.
+
+Im zweiten Schritt erfolgt das **Fine-Tuning**. Dabei werden gezielt spätere Schichten des Basisnetzwerks „entfroren“ und mit einer **reduzierten Lernrate** weitertrainiert. Dies erlaubt die Anpassung höherer Merkmalsebenen an die spezifischen Charakteristika der MRT-Bilder und verbessert die **Generalisierungsfähigkeit** auf die medizinische Domäne . Die Wahl einer niedrigeren Lernrate ist hierbei zentral, da so bereits **gelernte Repräsentationen erhalten bleiben** und dennoch eine **Spezialisierung** auf das aktuelle Problem erfolgen kann.
+
+Zur Optimierung der Modellparameter wird der **Stochastic Gradient Descent (SGD)-Optimizer** eingesetzt. Dieser ist ein klassischer Optimierungsalgorithmus, der die Parameter iterativ in Richtung des Gradienten der Verlustfunktion anpasst. Im Gegensatz zu adaptiven Verfahren wie Adam zeichnet sich SGD durch eine oft bessere **Generalisierungsleistung** aus, insbesondere in Bildklassifikationsaufgaben.
+
+::: {.callout-note title="Exkurs im Optimierungskontext" icon="info"}
+**Gradient:** 
+Der Gradient beschreibt die Richtung des stärksten Anstiegs einer Funktion. Beim Training neuronaler Netze zeigt er an, wie stark sich die Gewichte ändern müssten, um die Vorhersage zu verbessern. Der Optimizer bewegt die Gewichte deshalb *entgegen* der Gradientenrichtung, um den Fehler (Loss) zu minimieren.  
+
+**Optimizer:**
+Ein Optimierer ist das Verfahren, das bestimmt, wie die Gewichte des Netzes nach jeder Iteration angepasst werden. Unterschiedliche Optimierer (z. B. SGD, Adam) haben verschiedene Strategien, um schneller oder stabiler ein Minimum der Verlustfunktion zu erreichen.  
+
+**Generalisierungsleistung:**
+Ein Modell soll nicht nur die Trainingsdaten korrekt vorhersagen, sondern auch auf neuen, unbekannten Daten zuverlässig sein. Diese Fähigkeit nennt man Generalisierung. Ein Optimierer beeinflusst also indirekt, wie gut ein Modell auf Daten außerhalb des Trainingssatzes funktioniert.  
+:::
+
+Zusammengefasst kombiniert die Trainingsstrategie die Stabilität vortrainierter Feature-Repräsentationen mit der Flexibilität eines gezielten Fine-Tunings. Dieses Vorgehen gilt als ressourcenschonend, robust gegenüber Overfitting und ist in der medizinischen Bildanalyse vielfach etabliert.
+
+## Optimierung und Regularisierung
+
+Damit ein neuronales Netz lernen kann, benötigt es eine **Loss-Funktion** als Maß für den Fehler sowie begleitende **Regularisierungsmethoden**, die eine stabile Generalisierung unterstützen.
+
+### Loss-Funktion 
+
+Für das Training des Modells wurde die Kreuzentropie (CrossEntropyLoss) als Loss-Funktion eingesetzt. Diese misst die Abweichung zwischen den vorhergesagten Wahrscheinlichkeiten des Modells und den tatsächlichen Klassenlabels. Je stärker die Vorhersage von der wahren Klasse abweicht, desto höher ist der Verlust. Die Kreuzentropie bestraft insbesondere Vorhersagen, die einer falschen Klasse eine hohe Wahrscheinlichkeit zuordnen, und sorgt gleichzeitig dafür, dass die Wahrscheinlichkeit für die richtige Klasse maximiert wird. Damit eignet sie sich besonders für Multiklassen-Klassifikationsprobleme, wie sie in dieser Arbeit vorliegen. Allgemein bildet die Loss-Funktion das zentrale Kriterium für den Lernprozess neuronaler Netze, da sie dem Modell Rückmeldung darüber gibt, wie groß der aktuelle Fehler ist und in welche Richtung die Gewichte angepasst werden müssen.
+
+### Lernratensteuerung 
+
+Die Lernrate bestimmt die Schrittweite, mit der der Optimizer die Modellgewichte in Richtung einer besseren Lösung anpasst. Eine zu hohe Lernrate kann zu instabilen Sprüngen und damit zu Divergenz führen, während eine zu niedrige Lernrate den Trainingsprozess stark verlangsamt. In dieser Arbeit wurde zur Steuerung der Lernrate der Scheduler ReduceLROnPlateau eingesetzt. Dieser Mechanismus überwacht die Validierungsleistung und reduziert die Lernrate automatisch, sobald sich der Validierungs-F1 Wert über mehrere Epochen hinweg nicht verbessert. Auf diese Weise kann das Modell in der frühen Trainingsphase schnell lernen und wird in späteren Phasen durch kleinere Lernraten feiner angepasst. Die dynamische Steuerung der Lernrate trägt somit zu einem stabileren Training bei und erhöht die Wahrscheinlichkeit, ein Optimum der Gewichte zu erreichen. 
+
+### Regularisierung
+
+Neuronale Netze mit vielen Schichten besitzen eine hohe Kapazität, komplexe Muster in den Daten zu erlernen. Diese Eigenschaft birgt jedoch das Risiko des **Overfittings**: Das Modell passt sich zu stark an die Trainingsdaten an und verliert damit die Fähigkeit, auf neuen, unbekannten Daten zuverlässig zu generalisieren. Um dem entgegenzuwirken, wurden verschiedene Regularisierungsmethoden eingesetzt, die den Trainingsprozess stabilisieren und die Generalisierungsfähigkeit verbessern. 
+
+#### Mixed Precision Training 
+
+Eine wichtige Maßnahme stellt das **Mixed Precision Training** dar. Dabei werden Teile der Berechnungen in halber Genauigkeit (Float16 statt Float32) durchgeführt. Dies reduziert den Speicherbedarf erheblich und beschleunigt die Berechnungen, ohne dass ein relevanter Informationsverlust entsteht. Insbesondere bei begrenzten Hardware-Ressourcen, wie sie im vorliegenden Projekt auf Apple M3 Hardware zur Verfügung standen, ermöglicht Mixed Precision Training die effiziente Verarbeitung größerer Batches und führt gleichzeitig zu einer deutlichen Beschleunigung des Trainings. 
+
+#### Gradient Accumulation
+
+Darüber hinaus wurde **Gradient Accumulation** eingesetzt. Diese Technik fasst mehrere kleine Mini-Batches rechnerisch zu einer größeren effektiven Batchgröße zusammen. Dies ist insbesondere dann von Vorteil, wenn die Hardware nicht genügend Speicher für große Batches bereitstellt. Durch die Akkumulation der Gradienten über mehrere Iterationen hinweg können stabile Updates der Modellgewichte durchgeführt werden, was den Lernprozess robuster macht und die Vorteile größerer Batchgrößen nutzt, ohne die Hardware an ihre Grenzen zu bringen.  
+
+#### Early Stopping
+
+Ein weiterer zentraler Mechanismus war das **Early Stopping**. Dabei wird das Training automatisch beendet, sobald sich die Validierungsleistung über mehrere aufeinanderfolgende Epochen nicht mehr verbessert. Diese Strategie verhindert, dass das Modell weitertrainiert, obwohl es bereits begonnen hat, die Trainingsdaten zu „überlernen“. Early Stopping trägt somit wesentlich dazu bei, die Balance zwischen guter Anpassung an die Trainingsdaten und ausreichender Generalisierungsfähigkeit zu bewahren. 
+
+#### Data Augmentation
+
+Eine weitere Form der Regularisierung stellt die in dem vorherigen Kapitel beschriebenen **Data Augmentation** dar. Data Augmentation reduziert die Gefahr von Overfitting erheblich, da das Modell nicht nur die exakten Trainingsbilder „auswendig lernt“, sondern abstrakte Muster erkennt, die über verschiedene Variationen hinweg stabil bleiben.
+
+## Metriken
+
+Zur umfassenden Beurteilung der Modellleistung wurde eine Kombination verschiedener Metriken eingesetzt. Jede Metrik bildet unterschiedliche Aspekte der Güte ab und trägt in ihrer Gesamtheit zu einer differenzierten Bewertung der Klassifikationsleistung bei.
+
+### Accuracy
+Die Accuracy beschreibt den Anteil der korrekt klassifizierten Bilder an allen vorliegenden Bildern. Sie liefert eine intuitive und leicht verständliche Gesamtbewertung des Modells. Da die Accuracy jedoch durch unausgewogene Klassenverteilungen verzerrt werden kann, ist sie allein nicht ausreichend, um die Leistungsfähigkeit eines Modells im Multiklassenkontext zuverlässig zu beurteilen.
+
+### Precision (Präzision)
+Die Precision gibt den Anteil der als positiv vorhergesagten Fälle wieder, die tatsächlich positiv sind. Ein hoher Precision-Wert bedeutet, dass das Modell nur selten falsche Positive erzeugt. Im Kontext der Tumorerkennung reduziert eine hohe Präzision das Risiko, gesunde Personen fälschlicherweise mit einem Tumorverdacht zu konfrontieren.
+
+### Recall (Sensitivität)
+Der Recall beschreibt den Anteil der tatsächlich positiven Fälle, die vom Modell korrekt erkannt werden. Im medizinischen Kontext ist Recall von besonderer Bedeutung, da das Übersehen eines Tumors (False Negative) schwerwiegender ist als ein Fehlalarm. Ein hoher Recall stellt sicher, dass möglichst wenige betroffene Patienten übersehen werden.
+
+### Specificity (Spezifität)
+Die Specificity misst den Anteil der tatsächlich negativen Fälle, die korrekt als negativ klassifiziert werden. Sie ergänzt den Recall als Gegenstück und verhindert, dass das Modell zu viele Falsch-Positive erzeugt. Im Kontext der Tumorerkennung ist eine hohe Spezifität wichtig, um gesunde Personen nicht unnötig mit einem falschen Verdacht zu belasten. Zusammen mit dem Recall bildet die Spezifität die Grundlage für die Balanced Accuracy.
+
+### Macro-F1
+Die F1-Metrik kombiniert die Precision und den Recall zu einer einzigen Kennzahl, die sowohl die Reinheit der positiven Vorhersagen (Precision) als auch die Vollständigkeit der Erfassung relevanter Fälle (Recall) berücksichtigt.  
+Im Multiklassenfall wird für jede Klasse zunächst ein F1-Wert berechnet, der anschließend über alle Klassen gemittelt wird (**Macro-F1**). Jede Klasse geht dabei mit gleichem Gewicht in die Berechnung ein, unabhängig von ihrer Häufigkeit im Datensatz. Diese Metrik ist damit robust gegenüber Klassenungleichgewichten und erlaubt eine faire Bewertung der Modellleistung über alle vier Klassen hinweg.
+
+### ROC-AUC
+Die Receiver Operating Characteristic (ROC)-Kurve stellt die Beziehung zwischen True Positive Rate und False Positive Rate für unterschiedliche Entscheidungsschwellen dar. Die Fläche unter der ROC-Kurve (Area Under the Curve, AUC) quantifiziert die Trennschärfe des Modells.  
+Ein hoher AUC-Wert zeigt, dass das Modell in der Lage ist, positive und negative Beispiele zuverlässig zu unterscheiden. Da die ROC-AUC unabhängig von einer festen Entscheidungsschwelle ist, eignet sie sich insbesondere für die Beurteilung der grundsätzlichen Separierbarkeit der Klassen.
+
+### Precision-Recall-Kurven
+Die Precision-Recall-Kurve (PR-Kurve) stellt den Zusammenhang zwischen Precision und Recall über verschiedene Schwellenwerte dar. Die Fläche unter dieser Kurve (Area Under the Precision-Recall Curve, AUPRC) gibt einen zusammenfassenden Wert für die Leistung des Modells in Bezug auf die Balance zwischen Treffergenauigkeit und Vollständigkeit.  
+Im Gegensatz zur ROC-Kurve ist die PR-Kurve besonders aussagekräftig bei unausgeglichenen Datensätzen, da sie direkt die Fähigkeit des Modells abbildet, seltene Klassen zuverlässig zu erkennen. Dies ist im medizinischen Kontext von besonderer Bedeutung, da die fehlerfreie Identifikation auch kleinerer Klassen hohe Relevanz besitzt.
+
+### Confusion Matrix
+Die Confusion Matrix ist eine Kreuztabelle, die die tatsächlichen Klassen den vom Modell vorhergesagten Klassen gegenüberstellt. Die Hauptdiagonale der Matrix zeigt die korrekt klassifizierten Fälle, während die Nebendiagonalen Fehlklassifikationen verdeutlichen.  
+Die Confusion Matrix ermöglicht eine präzise Analyse, welche Klassen besonders häufig verwechselt werden. Sie stellt die Grundlage für die Berechnung von Precision, Recall und F1 dar und liefert wertvolle Hinweise für die gezielte Verbesserung des Modells, beispielsweise durch erweiterte Datenaugmentation oder eine Anpassung der Vorverarbeitung.
+
+### Expected Calibration Error (ECE)
+Der **Expected Calibration Error (ECE)** quantifiziert die Kalibrierung der vom Modell ausgegebenen Wahrscheinlichkeiten. Er berechnet den durchschnittlichen Abstand zwischen vorhergesagter Konfidenz und tatsächlicher Trefferquote über alle Konfidenz-Bins hinweg. Ein niedriger ECE-Wert bedeutet, dass die Wahrscheinlichkeiten des Modells verlässlich sind. Gerade im medizinischen Umfeld ist dies wichtig, da nicht nur die Vorhersage selbst, sondern auch die Sicherheit der Vorhersage in die klinische Entscheidungsfindung einfließt.
+Auf diese Thematik wird im weiteren Verlauf bei Bewertung der Metrik näher eingegangen.
+
+### Grad-CAM
+Ein Modell, das medizinische Bilder klassifiziert, muss verständlich und nachvollziehbar sein.
+Daher wurde Grad-CAM eingesetzt, eine Methode zur Visualisierung von neuronalen Netzen. Dabei werden die Aktivierungen im letzten Convolutional Layer von EfficientNet-B0 analysiert. Es entstehen Heatmaps, die zeigen, auf welche Bildbereiche das Modell besonders geachtet hat. So kann überprüft werden, ob das Modell tatsächlich auf die Tumorregion fokussiert und nicht auf irrelevante Strukturen.
+
+::: {.callout-note title="Zusammenfassung" icon="info"}
+Die Kombination der Metriken ermöglicht eine ausgewogene Bewertung der Modellleistung. Accuracy bietet einen schnellen Überblick, während Precision, Recall und Specificity klinisch relevante Aspekte wie Fehlalarme und übersehene Tumoren abbilden. Macro-F1, ROC-AUC und PR-Kurven liefern faire und schwellenunabhängige Bewertungen. Ergänzend zeigen Confusion Matrix, ECE und Grad-CAM detaillierte Fehleranalysen, Kalibrierung und visuelle Erklärbarkeit. So entsteht ein ganzheitliches Bild der Modellqualität.
+:::
+
+## Verwendete Python-Pakete
+
+Die folgende Tabelle listet alle eingesetzten Python-Pakete auf und beschreibt ihren jeweiligen Zweck im Projekt:
+
+| Paket              | Zweck                                                                 |
+|--------------------|----------------------------------------------------------------------|
+| **torch (PyTorch)** | Zentrales Framework für Deep Learning; Training und Evaluation von CNNs, Nutzung von GPU/MPS-Beschleunigung. |
+| **torchvision**     | Standard-Datasets und Transformationen für Bildverarbeitung.         |
+| **timm**            | Sammlung moderner Modellarchitekturen; bereitgestellt wurde EfficientNet-B0 als Backbone. |
+| **albumentations**  | Erweiterte Data-Augmentation (Rotationen, Flips, Helligkeits- und Kontraständerungen). |
+| **scikit-learn**    | Evaluationsmetriken wie Accuracy, F1, Confusion Matrix, ROC-AUC.    |
+| **pandas**          | Verwaltung tabellarischer Daten (Trainingshistorie, Ergebnisse, CSV-Exports). |
+| **matplotlib**      | Visualisierung: Lernkurven, ROC/PR-Kurven, Confusion Matrices, Diagramme. |
+| **pillow-simd (PIL)** | Bildverarbeitung zum Laden und Vorbereiten der MRT-Daten.          |
+| **pytorch-grad-cam**| Erklärbarkeit durch Grad-CAM-Heatmaps.                              |
+| **tqdm**            | Fortschrittsbalken beim Training für bessere Übersicht.             |
+| **ipywidgets**      | Interaktive Anzeige von Fortschrittsbalken in Jupyter Notebooks.    |
+| **quarto**          | Reproduzierbares Rendering des Reports (`report.qmd`).              |
+
+::: {.callout-note title="Hinweis" icon="info"}
+Alle Pakete sind in der Datei `environment.yml` dokumentiert. Damit kann die exakte Umgebung mit Conda wiederhergestellt werden.
+:::
+
+# Ergebnisse und Analyse
+
+## Quantitative Ergebnisse
+
+### Head-Only Training
+
+```{python}
+#| label: head-only-csv-metrics
+#| tbl-cap: "Resultate für das (Only-Head) Training des Modells"
+#| fig-cap-location: margin
+#| echo: false
+
+import pandas as pd
+
+df = pd.read_csv("figures/metrics_head_only.csv")
+
+df = df.drop(columns=['lr'])
+
+df
+```
+
+Die Tabelle zum Head-Only Training zeigt die Entwicklung der Metriken über 20 Epochen. Bereits in den ersten Epochen ist ein deutlicher Rückgang des Trainingsverlusts (train_loss) von >2.0 auf Werte um 0.27 zu erkennen. Parallel steigt die Validierungsgenauigkeit (val_acc) von 0.649 (Epoche 1) auf 0.884 (Epoche 20). Der Macro-F1-Score verbessert sich kontinuierlich und erreicht am Ende einen Wert von 0.879.  
+
+Die Werte belegen, dass das Modell schon durch reines Training des Klassifikationskopfes robuste Repräsentationen aufbauen konnte. Auffällig ist, dass sich die Verbesserungen gegen Ende der Trainingsphase abflachen. Das spricht dafür, dass das Modell in dieser Konfiguration sein Leistungslimit weitgehend erreicht hat. Hinweise auf Overfitting sind nicht zu erkennen, da Validierungsverlust (val_loss) und Trainingsverlust in ähnlicher Größenordnung sinken und stabil bleiben.  
+
+Zusammengefasst konnte allein mit Head-Only Training eine solide Modellleistung erzielt werden, die allerdings noch nicht das volle Potenzial des EfficientNet-B0 ausschöpft.
+
+### Fine-Tuning
+
+```{python}
+#| label: fine-tuning-csv-metrics
+#| tbl-cap: "Resultate für das (Fine-Tuning) Training des Modells"
+#| fig-cap-location: margin
+#| echo: false
+
+import pandas as pd
+
+df = pd.read_csv("figures/metrics_finetune.csv")
+
+df = df.drop(columns=['lr'])
+
+df
+```
+
+Das Fine-Tuning der späten Netzwerkblöcke zeigt einen deutlichen Leistungszuwachs. Der Trainingsverlust sinkt von 0.25 (Epoche 1) bis auf 0.04 (Epoche 15), während der Validierungsverlust parallel von 0.28 auf 0.04 zurückgeht. Besonders hervorzuheben ist die Validierungsgenauigkeit, die von 0.893 auf bis zu 0.990 ansteigt. Der Macro-F1 verbessert sich von 0.889 (Epoche 1) auf 0.989 (Epoche 15).  
+
+Im Vergleich zum Head-Only Training zeigt sich ein signifikanter Sprung von ca. 10 Prozentpunkten im Macro-F1. Dieser Zuwachs verdeutlicht, dass das Modell durch Anpassung der tieferen Schichten wesentlich besser auf die spezifischen Muster der MRT-Bilder reagieren kann. Auch hier gibt es keine Anzeichen für Overfitting, da die Validierungsmetriken stabil und parallel zu den Trainingswerten verlaufen.  
+
+Damit bestätigt das Fine-Tuning, dass die Kombination aus vortrainierten Features und gezielter Anpassung an den Datensatz eine deutlich verbesserte Klassifikationsgüte ermöglicht.
+
+### Lernkurven
+
+![Lernkurven des Modells](figures/learning_curves.png){#fig-learning-curves fig-cap="Lernkurven des Modells über die Epochen bei (Head-Only) und Fine-Tuning training"}
+
+Die Lernkurven-Abbildung verdeutlicht die zuvor beschriebenen Ergebnisse anschaulich. Im linken Diagramm („Loss über Epochen“) zeigt sich, dass der Trainingsverlust im Head-Only Training deutlich langsamer abnimmt als beim Fine-Tuning. Während Head-Only bei Epoche 20 noch bei rund 0.27 liegt, sinkt der Fine-Tuning-Verlust bereits bei Epoche 15 auf Werte unter 0.05.  
+
+Das rechte Diagramm („Macro-F1 über Epochen“) bestätigt diesen Trend: Während der Head-Only F1 von 0.63 auf knapp 0.88 ansteigt, erreicht das Fine-Tuning bereits nach wenigen Epochen Werte >0.90 und stabilisiert sich bei etwa 0.99. Besonders auffällig ist, dass Fine-Tuning wesentlich schneller konvergiert – die Lernkurve flacht bereits ab Epoche 8 ab, während Head-Only deutlich länger braucht, um ein Plateau zu erreichen.  
+
+Die Lernkurven liefern somit eine klare Evidenz: Fine-Tuning verbessert nicht nur die Endleistung, sondern auch die **Trainingsdynamik**, indem es das Modell schneller und stabiler zu hohen Genauigkeiten führt.  
+
+## Test-Performance (finales Modell)
+
+Im finalen Testlauf mit dem Modell `effb0_best_finetune.pt` wurden die, in der unten aufgeführten Tabelle, Gesamtmetriken erreicht: 
+
+### Ergebnisse pro Klasse
+
+```{python}
+#| label: final-test-report-metrics
+#| tbl-cap: "Resultate für den Testdurchlauf des Modells mit den Testdaten"
+#| fig-cap-location: margin
+#| echo: false
+
+import pandas as pd
+
+df = pd.read_csv("figures/final_test_report_clean.csv")
+
+df
+```
+
+### 2.2 Interpretation
+
+- **Glioma:** Mit einer Präzision von 0.993 werden fast alle positiven Vorhersagen korrekt getroffen. Allerdings liegt der Recall bei 0.938, was bedeutet, dass einzelne Gliome übersehen wurden. Diese Schwäche ist klinisch relevant, da ein übersehenes Gliom eine verzögerte Therapie nach sich ziehen könnte.  
+
+- **Meningioma:** Hier zeigt sich ein umgekehrtes Muster: Ein sehr hoher Recall von 0.984 zeigt, dass kaum Fälle übersehen werden, während die Präzision mit 0.938 etwas niedriger liegt. Das deutet auf vereinzelte Falsch-Positive hin, die zumeist durch Verwechslungen mit Gliomen entstehen.  
+
+- **No Tumor:** Mit einer nahezu perfekten Balance (Precision 0.990, Recall 0.998) erkennt das Modell gesunde Bilder äußerst zuverlässig. Das Risiko, fälschlicherweise einen Tumor zu diagnostizieren, ist minimal.  
+
+- **Pituitary (Hypophysenadenom):** Mit Precision 0.997 und Recall 0.993 wird diese Tumorart fast fehlerfrei erkannt. Die klaren morphologischen Merkmale scheinen das Modell hier besonders zu unterstützen.  
+
+Insgesamt erreicht das Modell eine **Accuracy von 98 %** und einen **Macro-F1 von 0.978**. Die verbleibenden Fehler konzentrieren sich auf **Gliom ↔ Meningiom**, was die bekannten Schwierigkeiten bei der Differenzierung dieser beiden Tumorarten widerspiegelt.
+
+## Confusion Matrix
+
+Zur detaillierten Fehleranalyse wurden sowohl eine normalisierte als auch eine absolute Confusion Matrix erstellt.  
+
+### Normalisierte Matrix
+
+![Confusion Matrix (normalisiert)](figures/confusion_test_norm.png){#fig-confmat-norm fig-cap="Normalisierte Confusion Matrix auf dem Testset (Zeilen = wahre Klasse, Spalten = Vorhersage)."}
+
+Die **normalisierte Matrix** zeigt die prozentuale Verteilung der Klassifikationen, wodurch Verwechslungen direkt im Verhältnis zur jeweiligen Klasse sichtbar werden.  
+
+### Absolute Matrix
+
+![Confusion Matrix (absolute Werte)](figures/confusion_test_counts.png){#fig-confmat-abs fig-cap="Confusion Matrix mit absoluten Fallzahlen auf dem Testset."}
+
+Die **absolute Matrix** ergänzt dies durch die tatsächliche Anzahl der Fälle, sodass die praktische Bedeutung der Fehler besser eingeschätzt werden kann.
+
+### Analyse pro Klasse
+
+- **Glioma:** Von 305 Gliomen wurden 286 korrekt erkannt (Recall ≈ 0.94). 18 Fälle wurden fälschlicherweise als Meningiom klassifiziert, ein weiterer Fall als „No Tumor“. Diese Verwechslungen unterstreichen die Nähe der Bildmuster zwischen Gliomen und Meningiomen.  
+
+- **Meningioma:** Von 309 Fällen wurden 304 richtig zugeordnet (Recall ≈ 0.98). Vier Fälle wurden als „No Tumor“ und ein Fall als Gliom erkannt. Die hohe Trefferquote bestätigt, dass Meningiome in den meisten Fällen zuverlässig erkannt werden, auch wenn gelegentlich subtile Merkmale zu Verwechslungen führen.  
+
+- **No Tumor:** Von 405 gesunden Fällen wurden 404 korrekt als „No Tumor“ klassifiziert. Nur ein Fall wurde fälschlicherweise als Gliom erkannt. Damit ist diese Klasse nahezu perfekt trennbar.  
+
+- **Pituitary:** Von 300 Hypophysenadenomen wurden 298 korrekt klassifiziert, zwei Fälle wurden als Meningiome fehlinterpretiert. Die Performance ist insgesamt exzellent, mit nur minimalen Fehlklassifikationen.
+
+### Klinische Einordnung
+
+Die Confusion Matrix verdeutlicht, dass die verbleibenden Fehler fast ausschließlich bei **Gliomen und Meningiomen** auftreten. Diese Verwechslungen sind klinisch besonders kritisch, da beide Tumorarten unterschiedliche Therapieansätze erfordern.  
+
+Im Gegensatz dazu sind die Klassen **No Tumor** und **Pituitary** nahezu fehlerfrei getrennt. Das bedeutet, dass das Modell in der Lage ist, gesunde Aufnahmen zuverlässig zu identifizieren und Tumorarten mit klaren anatomischen Merkmalen sehr sicher zu klassifizieren.  
+
+::: {.callout-note title="Hinweis zur klinischen Bedeutung" icon="info"}
+Selbst wenn die Gesamtgenauigkeit sehr hoch ist, können **Einzelfehler bei Tumorerkrankungen schwerwiegende Konsequenzen** haben. Die Ergebnisse zeigen, dass insbesondere bei Gliomen eine zusätzliche ärztliche Absicherung unverzichtbar bleibt.
+:::
+
+## ROC- und PR-Kurven
+
+Zur Bewertung der Trennschärfe des Modells wurden ROC- und Precision–Recall-Kurven auf dem Testset erstellt.
+
+### ROC-Kurven
+Die ROC-Kurven (Receiver Operating Characteristic) zeigen die Beziehung zwischen True Positive Rate (Recall) und False Positive Rate über verschiedene Schwellenwerte hinweg. Für alle vier Klassen wurde eine **AUC (Area Under the Curve) von >0.99** erreicht. Dies belegt, dass das Modell die Klassen nahezu perfekt voneinander trennen kann.  
+
+![ROC-Kurven (OvR) — Test](figures/roc_ovr_test.png){#fig-roc-ovr fig-cap="ROC-Kurven (One-vs-Rest) mit AUC je Klasse auf dem Testset."}
+
+In der Abbildung ist auf der X-Achse die False Positive Rate und auf der Y-Achse die True Positive Rate dargestellt. Die Kurven verlaufen fast vollständig entlang der linken und oberen Diagrammkante, was eine sehr hohe Trennschärfe signalisiert. Je näher eine Kurve an die linke obere Ecke reicht, desto besser unterscheidet das Modell zwischen den Klassen. Der Bereich unter den Kurven (AUC) liegt bei allen vier Klassen oberhalb von 0.99 – ein nahezu perfektes Ergebnis.
+
+### Precision–Recall-Kurven
+Die Precision–Recall-Kurven ergänzen die ROC-Kurven und sind besonders bei potenziellen Klassendisbalancen aussagekräftig. Auch hier zeigt sich eine exzellente Modellleistung: Die Precision bleibt auch bei sehr hohem Recall (>0.95) auf hohem Niveau. Dies bedeutet praktisch, dass selbst bei einer aggressiven Schwellenabsenkung (z. B. um möglichst keine Tumorfälle zu übersehen) nur wenige zusätzliche Falsch-Positive entstehen.  
+
+![Precision–Recall-Kurven (OvR) — Test](figures/pr_ovr_test.png){#fig-pr-ovr fig-cap="Precision–Recall-Kurven (One-vs-Rest) mit Average Precision je Klasse."}
+
+In der Abbildung wird auf der X-Achse der Recall und auf der Y-Achse die Precision dargestellt. Alle Kurven verlaufen weit oberhalb von 0.9, auch im Bereich sehr hoher Sensitivität. Dies verdeutlicht, dass das Modell in der Lage ist, Tumoren nahezu vollständig zu erkennen, ohne dabei viele gesunde Proben fälschlich als positiv zu klassifizieren. Die Flächen unter den Kurven (Average Precision) liegen entsprechend ebenfalls nahe 1.0.
+
+## Kalibrierung (Reliability Diagram, ECE)
+
+Neben den klassischen Leistungsmetriken ist die **Kalibrierung** der Vorhersagen entscheidend. Sie gibt an, ob die vom Modell ausgegebenen Wahrscheinlichkeiten der tatsächlichen Trefferquote entsprechen.  
+
+Das **Reliability Diagram** vergleicht die vorhergesagte Konfidenz (X-Achse, Wertebereich 0–1) mit der tatsächlichen Trefferquote (Y-Achse, ebenfalls 0–1). Die gestrichelte Diagonale markiert ein perfekt kalibriertes Modell. Ein **Expected Calibration Error (ECE)** von 0.019 deutet auf eine insgesamt sehr gute Kalibrierung hin.  
+
+![Reliability Diagram (ECE)](figures/reliability_toplabel.png){#fig-reliability fig-cap="Reliability Diagram (Top-Label) mit Expected Calibration Error (ECE)."}
+
+In der Abbildung werden die Vorhersagen in sogenannte **Bins** eingeteilt, also Intervalle der Konfidenz (z. B. 0.0–0.1, 0.1–0.2 usw.). Die blauen Balken zeigen für jedes Intervall die tatsächliche Trefferquote. Idealerweise liegen sie genau auf der Diagonalen. In dieser Abbildung weichen sie leicht nach unten ab, was auf eine minimale **Überkonfidenz** bei hohen Wahrscheinlichkeiten hinweist: Wenn das Modell eine Konfidenz von 0.9 ausgibt, liegt die tatsächliche Trefferquote im Mittel etwas darunter.  
+
+Trotz dieser leichten Abweichung ist die Kalibrierung insgesamt sehr gut. Für klinische Anwendungen ist dies relevant, da nicht nur die Klassenzuordnung, sondern auch die **Verlässlichkeit der Wahrscheinlichkeiten** entscheidend ist. Ein Modell, das bei 95 % Konfidenz auch in etwa 95 % der Fälle richtig liegt, bietet Ärzt:innen eine solide Entscheidungsgrundlage.  
+
+Als potenzielle Verbesserung könnte **Temperature Scaling** auf dem Validierungsset angewendet werden, um die Überkonfidenz zu reduzieren, ohne die Klassifikationsleistung (AUC, F1) zu beeinträchtigen.
+
+## Qualitative Analyse (Grad-CAM & Fehlerfälle)
+
+Neben den quantitativen Metriken ist auch eine qualitative Betrachtung der Modellentscheidungen wichtig. Hierzu wurde die Methode **Grad-CAM (Gradient-weighted Class Activation Mapping)** eingesetzt, die visualisiert, auf welche Bildregionen das Modell bei seinen Entscheidungen besonders achtet.
+
+### Grad-CAM-Beispiele
+
+![Grad-CAM Beispiel 1](figures/gradcam/example_1.png){#fig-gradcam-1 fig-cap="Grad-CAM-Heatmap (korrekt klassifizierter Fall): Fokus klar auf der Tumorregion."}
+
+![Grad-CAM Beispiel 2](figures/gradcam/example_2.png){#fig-gradcam-2 fig-cap="Grad-CAM-Heatmap (korrekt klassifizierter Fall): Fokus ebenfalls auf der Tumorregion."}
+
+![Grad-CAM Beispiel 3](figures/gradcam/example_3.png){#fig-gradcam-3 fig-cap="Grad-CAM-Heatmap (weiteres Beispiel) zur qualitativen Verifikation des Fokus."}
+
+Die Abbildungen zeigen, dass das Modell bei korrekt klassifizierten Bildern die Tumorregion und deren unmittelbare Umgebung fokussiert. Dies deutet darauf hin, dass die Klassifikationen auf klinisch relevanten Strukturen beruhen. In fehlerhaften Fällen wurde hingegen ein diffuseres Aktivierungsmuster beobachtet, das teils auf Gefäße, Artefakte oder Hintergrundstrukturen ausweicht.
+
+### Fehlergalerie
+
+![Fehlergalerie](figures/error_gallery.png){#fig-error-gallery fig-cap="Fehlergalerie: exemplarische Missklassifikationen mit Ground Truth (GT) und Modellvorhersage (Pred)."}
+
+Die Fehleranalyse verdeutlicht typische Missklassifikationen:
+- **Glioma ↔ Meningioma:** Häufigste Verwechslung, da beide Tumorarten in MRT-Bildern teils sehr ähnliche Texturen und Kontrastmuster aufweisen.  
+- **Artefakte:** Bildrauschen, ringförmige Muster oder starke Helligkeitsunterschiede können den Fokus des Modells fehlleiten.  
+- **Kleine Läsionen oder unscharfe Grenzen:** Besonders schwierige Fälle, bei denen selbst Expert:innen nicht immer übereinstimmen.  
+
+### Handlungsableitungen
+
+Die qualitative Analyse liefert konkrete Hinweise auf mögliche Verbesserungsansätze:
+- **Preprocessing/Cropping:** Tumor-zentrierte Zuschnitte oder eine vorgeschaltete Segmentierung könnten den Fokus stabilisieren.  
+- **Artefakt-robuste Augmentierungen:** Ergänzende Datenaugmentationen (z. B. leichte Intensitätsverzerrungen oder simuliertes Rauschen) könnten das Modell robuster gegenüber Bildartefakten machen.  
+
+Damit bestätigen die qualitativen Analysen die quantitative Bewertung: Das Modell fokussiert überwiegend korrekt auf Tumorregionen, ist jedoch bei Grenzfällen und Artefakten anfällig.
+
+## Zusammenfassung der Ergebnisse
+
+Die durchgeführte Analyse zeigt, dass das Modell eine sehr hohe Klassifikationsleistung erreicht. Bereits im **Head-Only Training** wurden solide Ergebnisse erzielt (Val-F1 ≈ 0.879), die durch **Fine-Tuning** deutlich gesteigert werden konnten (Val-F1 ≈ 0.989). Auch im finalen Testlauf bestätigten sich diese Werte mit einer **Accuracy von 98 %** und einem **Macro-F1 von 0.978**.  
+
+Die **Ergebnisse pro Klasse** belegen eine nahezu perfekte Trennung bei *No Tumor* und *Pituitary*, während die wenigen Fehlklassifikationen fast ausschließlich zwischen **Gliomen und Meningiomen** auftreten. Diese Schwäche spiegelt die klinisch plausible Schwierigkeit der Differenzierung wider.  
+
+Die **ROC- und PR-Kurven** mit AUC- und Average-Precision-Werten nahe 1.0 zeigen eine exzellente Trennschärfe über verschiedene Entscheidungsschwellen hinweg. Gleichzeitig weist das **Reliability Diagram** auf eine insgesamt sehr gute Kalibrierung hin, auch wenn eine leichte Überkonfidenz bei hohen Wahrscheinlichkeiten erkennbar ist.  
+
+Die **Grad-CAM-Heatmaps** bestätigen, dass das Modell überwiegend auf die Tumorregionen fokussiert, während die Fehleranalyse typische Missklassifikationen (Glioma ↔ Meningioma) und Artefakt-Einflüsse sichtbar macht.  
+
+Zusammengefasst liefert das Modell ein **robustes, gut kalibriertes und erklärbares Ergebnis** mit klinisch relevanten Stärken, jedoch auch erkennbaren Schwächen, die in der anschließenden Diskussion kritisch eingeordnet werden.
+
+# Diskussion und Ausblick
+
+## Bewertung der Thesen
+
+In diesem Abschnitt werden die eingangs formulierten Hypothesen (`H1`–`H4`) systematisch anhand der erzielten Ergebnisse überprüft.
+
+### `H1`: Grad-CAM ermöglicht eine visuelle Verifikation, dass das Modell auf tumorrelevante Regionen fokussiert.
+
+Diese Hypothese konnte **bestätigt** werden. Die erzeugten Grad-CAM-Heatmaps zeigen bei korrekt klassifizierten Fällen eine klare Fokussierung auf die Tumorregion und deren unmittelbare Umgebung. Dies unterstützt die Annahme, dass das Modell tatsächlich relevante Bildinformationen für seine Entscheidungen nutzt. Bei Fehlklassifikationen wurden dagegen diffuse oder versetzte Aktivierungen beobachtet, was auf **Ablenkungen** durch Artefakte oder unscharfe Tumorgrenzen hinweist. Damit liefert Grad-CAM sowohl qualitative Evidenz für die korrekte Funktionsweise des Modells als auch Hinweise für Fehlermuster.
+
+### `H2`: Kalibrierung bietet zusätzliche Einblicke in die Vertrauenswürdigkeit der Vorhersagen.
+
+Auch diese Hypothese wurde **bestätigt**. Das Reliability Diagramm ergab einen sehr niedrigen Expected Calibration Error (ECE ≈ 0.019), was auf eine insgesamt gute Kalibrierung hinweist. Zwar zeigte sich im Bereich hoher Konfidenz (>0.8) eine leichte Überkonfidenz, dennoch stimmen die vorhergesagten Wahrscheinlichkeiten weitgehend mit den empirischen Trefferquoten überein. Diese Ergebnisse unterstreichen, dass Kalibrierungsmetriken wie der ECE einen wertvollen Zusatznutzen bieten, da sie die **Verlässlichkeit der Wahrscheinlichkeiten** quantifizieren – ein entscheidender Aspekt im medizinischen Einsatz.
+
+### `H3`: Das Fine-Tuning der letzten Netzwerkblöcke verbessert die Klassifikationsleistung gegenüber dem reinen Training des Klassifikationskopfes.
+
+Die Ergebnisse zeigen eine **Bestätigung** dieser Hypothese. Während das Head-Only-Training einen Val-F1 von ≈ 0.87 erreichte, konnte das Fine-Tuning die Leistung auf ≈ 0.97 steigern. Damit wurde die Klassifikationsgüte um mehr als 10 Prozentpunkte verbessert. Die Lernkurven zeigen zudem, dass das Fine-Tuning nicht zu Overfitting führte, sondern die Generalisierung auf den Validierungs- und Testdaten nachhaltig verbessert hat. Dies bestätigt die Wirksamkeit von Fine-Tuning bei domänenspezifischen Bilddaten.
+
+### `H4`: Der Einsatz von Early Stopping, Mixed Precision und Gradient Accumulation ermöglicht stabiles Training auch auf Hardware mit begrenzten Ressourcen.
+
+Auch `H4` wurde **bestätigt**. Durch Early Stopping konnte unnötiges Weitertrainieren verhindert und Overfitting vermieden werden. Mixed Precision reduzierte den Speicherbedarf und beschleunigte das Training auf der Apple M3-Hardware spürbar. Gradient Accumulation erlaubte die Nutzung effektiver Batchgrößen trotz limitierter CPU-Ressourcen. Der gesamte Trainingsprozess verlief stabil und reproduzierbar, ohne Speicherfehler oder Divergenzen. Damit zeigt sich, dass Techniken für ressourcenbegrenzte Hardwareumgebungen essenziell sind.
+
+### Übersicht der Hypothesenbewertung
+
+| Hypothese | Inhalt | Ergebnis |
+|-----------|--------|----------|
+| `H1` | Grad-CAM fokussiert auf tumorrelevante Regionen | **Bestätigt** |
+| `H2` | Kalibrierung liefert Einblicke in Vertrauenswürdigkeit | **Bestätigt** |
+| `H3` | Fine-Tuning > Head-Only bei der Klassifikationsleistung | **Bestätigt** |
+| `H4` | Early Stopping, Mixed Precision & Gradient Accumulation sichern stabiles Training | **Bestätigt** |
+
+::: {.callout-note title="Fazit zur Hypothesenbewertung" icon="info"}
+Alle vier Hypothesen konnten bestätigt werden. Besonders hervorzuheben ist der Leistungsgewinn durch Fine-Tuning (`H3`) sowie die erfolgreiche Integration von Stabilitätstechniken (`H4`), die das Training auf ressourcenbegrenzter Hardware ermöglicht haben. Grad-CAM (`H1`) und Kalibrierung (`H2`) erwiesen sich zudem als wertvolle Instrumente, um die **Interpretierbarkeit** und **Verlässlichkeit** des Modells zu belegen, zentrale Kriterien im medizinischen Kontext.
+:::
+
+## Kritische Reflexion der Ergebnisse
+
+### Kritische Betrachtung der Hypothesenbewertung
+
+Obwohl alle Hypothesen (`H1`–`H4`) bestätigt werden konnten, ist eine kritische Einordnung erforderlich:  
+
+- **`H1` (Grad-CAM):** Die Heatmaps zeigen in vielen Fällen eine klare Fokussierung auf Tumorregionen. Allerdings bleibt Grad-CAM ein heuristisches Verfahren ohne Kausalitätsgarantie. Es kann auch auf Artefakte oder irrelevante Strukturen reagieren. Eine Überinterpretation der Karten sollte daher vermieden werden.  
+
+- **`H2` (Kalibrierung):** Der ECE-Wert von 0.019 ist sehr niedrig und deutet auf gute Kalibrierung hin. Dennoch ist dies nur für den verwendeten Datensatz belegt. Bei heterogenen Daten (andere Scanner, Sequenzen oder Rauschartefakte) könnte sich die Kalibrierung verschlechtern. Eine externe Validierung fehlt bislang.  
+
+- **`H3` (Fine-Tuning):** Der Leistungszuwachs durch Fine-Tuning ist eindeutig, jedoch wurde nur auf einem vergleichsweise homogenen Datensatz evaluiert. Das Risiko besteht, dass das Modell in realistischeren Szenarien mit höherer Varianz (unterschiedliche Scanner, Bildqualität, Patientenkollektive) schwächere Ergebnisse zeigt. Zudem bleibt die Gefahr eines verdeckten Overfittings, wenn Patientensplits nicht streng kontrolliert sind.  
+
+- **`H4` (Stabilitätstechniken):** Early Stopping, Mixed Precision und Gradient Accumulation haben das Training stabilisiert. Dennoch erfordert Mixed Precision eine gewisse Vorsicht: Manche Operationen können durch reduzierte Genauigkeit numerisch instabil werden. Auch Gradient Accumulation kann bei falscher Implementierung zu fehlerhaften Updates führen.  
+
+::: {.callout-note title="Kritische Punkte" icon="info"}
+- Grad-CAM liefert **nur qualitative Hinweise**, keine harten Beweise.  
+- Kalibrierung muss auf **externe Datensätze** überprüft werden.  
+- Fine-Tuning-Ergebnisse können durch **Datenhomogenität überschätzt** sein.  
+- Stabilitätstechniken (z. B. Mixed Precision) bergen **Fehlerrisiken** bei falscher Anwendung.  
+:::
+
+### Schwächen
+
+Trotz der insgesamt sehr hohen Metriken weist das Modell spezifische Schwächen auf, die für die Bewertung entscheidend sind.
+
+#### Glioma - Meningioma Verwechslungen 
+
+Die Confusion Matrix zeigt, dass ein Großteil der verbliebenen Fehlklassifikationen zwischen diesen beiden Tumorarten auftritt. Dies ist nachvollziehbar, da beide Entitäten in der MRT-Bildgebung teils ähnliche Texturen, Kontrastmuster und Lokalisationen aufweisen. Für die Praxis bedeutet dies jedoch, dass gerade in diagnostisch schwierigen Fällen das Modell nicht zuverlässig differenzieren kann. Eine klinische Anwendung ohne zusätzliche Absicherung wäre hier riskant.
+
+#### 2D-Ansatz statt 3D-Analyse  
+
+Das Training basiert ausschließlich auf zweidimensionalen Schnitten. Dadurch gehen wertvolle Kontextinformationen aus den angrenzenden Schichten verloren, die für die ärztliche Diagnose häufig entscheidend sind (z. B. Ausdehnung und Infiltration des Tumors). Diese Vereinfachung macht das Training zwar effizienter, begrenzt aber die klinische Aussagekraft.
+
+#### Homogenes Datenset  
+
+Der verwendete Datensatz stammt aus einer einheitlichen Quelle und weist eine vergleichsweise homogene Bildqualität auf. In der Realität unterscheiden sich MRT-Aufnahmen jedoch deutlich in Auflösung, Sequenzen und Scannerparametern. Das Risiko besteht, dass das Modell bei externen Daten deutlich schlechtere Ergebnisse liefert. Ohne externe Validierung bleibt die Generalisierbarkeit ungewiss.
+
+::: {.callout-note title="Klinische Relevanz" icon="info"}
+Auch wenn die Fehlerraten sehr niedrig erscheinen, können **selbst kleine Fehler gravierende Folgen** haben: 
+
+- Ein übersehenes Gliom bedeutet eine verzögerte Therapie mit schlechterer Prognose.  
+- Ein falsch positives Tumorergebnis kann unnötige invasive Untersuchungen oder Operationen auslösen.  
+
+Die hohe Gesamtgenauigkeit darf daher nicht darüber hinwegtäuschen, dass **Einzelfehler im medizinischen Kontext besonders kritisch** sind.
+:::
+
+## Limitationen der Arbeit
+
+Trotz der erzielten sehr hohen Modellgüte sind mehrere Einschränkungen zu berücksichtigen, die die Aussagekraft der Ergebnisse begrenzen.
+
+### Fehlende externe Validierung
+
+Wie im vorherigen Abschnitt erwähnt, wurde ausschließlich auf dem vorhandenen Kaggle-Datensatz trainiert und getestet. Externe Validierung auf Daten aus anderen Kliniken, Scannern oder Patientenkollektiven fehlt. Damit bleibt unklar, ob die Ergebnisse auf heterogenere reale Szenarien übertragbar sind. In der medizinischen Bildanalyse gilt externe Validierung jedoch als essenzieller Schritt, um die Robustheit und Generalisierbarkeit eines Modells nachzuweisen. Dementsprechend ist dieses Modell auf seinen Datensatz limitiert.
+
+### Potenzielles Data Leakage
+
+Obwohl Training, Validierung und Test aufgetrennt wurden, besteht bei Bilddaten das Risiko von **Patienten-Overlap** zwischen den Splits (z. B. mehrere Slices desselben Patienten in unterschiedlichen Sets). Dies könnte zu einer Überschätzung der Modellleistung führen. Eine streng patientengetrennte Aufteilung wäre notwendig, um Data Leakage sicher auszuschließen.
+
+### Hardware-Limitationen
+
+Das Training erfolgte ausschließlich auf einem **Apple MacBook Air 2024 mit M3-Prozessor**. Diese Hardware ist zwar für Prototyping geeignet, bietet jedoch keine dedizierte Hochleistungs-GPU wie bei professionellen Workstations oder Cloud-Umgebungen. Um Speicherbeschränkungen zu umgehen, waren Methoden wie Mixed Precision und Gradient Accumulation notwendig. Zwar zeigen die Ergebnisse, dass ein stabiles Training möglich ist, jedoch ist die Skalierbarkeit auf größere Modelle oder Datensätze durch diese Hardware stark eingeschränkt.
+
+## Ausblick und nächste Schritte
+
+Aufbauend auf den vorliegenden Ergebnissen lassen sich mehrere methodische und konzeptionelle Erweiterungen ableiten, die zur weiteren Verbesserung des Modells beitragen können:
+
+### Methodische Weiterentwicklungen
+- **2.5D- oder 3D-Modelle:**  
+  Der Wechsel von rein zweidimensionalen Schnitten zu 2.5D- oder vollwertigen 3D-Architekturen würde die Nutzung von Kontextinformationen über mehrere Schichten hinweg ermöglichen. Dies könnte die Unterscheidung morphologisch ähnlicher Tumorarten verbessern.  
+- **Segmentierung oder tumorzentriertes Cropping:**  
+  Eine vorgeschaltete Tumorsegmentierung oder automatisches Cropping könnte sicherstellen, dass das Modell stets auf die relevante Region fokussiert und weniger durch Bildhintergründe oder Artefakte abgelenkt wird.  
+- **Test-Time Augmentation und Ensembles:**  
+  Durch Vorhersagen mit leichten Bildvariationen (TTA) oder die Kombination mehrerer Modelle (Ensembles) ließe sich die Robustheit und Stabilität der Vorhersagen erhöhen.
+
+### Validierung und Robustheit
+- **Externe Validierung:**  
+  Um die Generalisierbarkeit nachzuweisen, ist eine Evaluation auf externen Datensätzen unterschiedlicher Kliniken und Scanner zwingend notwendig.  
+- **Robustheit gegen Artefakte:**  
+  Zukünftige Arbeiten sollten gezielt prüfen, wie das Modell auf Bildrauschen, Scanner-Artefakte oder ungewöhnliche Bildkontraste reagiert, und entsprechende Augmentierungsstrategien entwickeln.
+
+### Kalibrierung der Vorhersagen
+Eine weitere Möglichkeit zur Verbesserung des Modells liegt in der **Kalibrierung der Vorhersagen**. Verfahren wie *Temperature Scaling* oder *Platt Scaling* könnten eingesetzt werden, um die im Reliability Diagram identifizierte leichte Überkonfidenz zu reduzieren, ohne die Trennschärfe des Modells wesentlich zu beeinträchtigen. Eine verbesserte Kalibrierung würde die Zuverlässigkeit der ausgegebenen Wahrscheinlichkeiten erhöhen und damit die klinische Vertrauenswürdigkeit der Modellentscheidungen stärken.
+
+### Erweiterte Erklärbarkeit
+Neben Grad-CAM könnten künftig auch andere Methoden der **Erklärbarkeit** eingesetzt werden, etwa *LIME* oder *SHAP*. Diese Ansätze ermöglichen es, die Entscheidungslogik des Modells auch außerhalb der rein visuellen Ebene zu analysieren. Auf diese Weise ließe sich nachvollziehen, welche Merkmale eines Bildes konsistent als relevant eingestuft werden und ob sich systematische Muster erkennen lassen, die das Vertrauen in die Modellvorhersagen weiter erhöhen.
+
+## Schlussgedanke
+
+Die vorliegende Arbeit zeigt, dass moderne Deep-Learning-Methoden wie Transfer Learning und Fine-Tuning auf einem vergleichsweise kleinen MRT-Datensatz zu sehr hohen Klassifikationsleistungen führen können. Dennoch darf die hohe numerische Güte nicht darüber hinwegtäuschen, dass es sich um eine **experimentelle Studie im Lehrkontext** handelt.  
+
+Für den klinischen Einsatz sind weitere Schritte zwingend notwendig: externe Validierungen, 3D-Analysen und eine umfassende Robustheitsprüfung. Der wahre Wert dieser Arbeit liegt darin, dass sie eine **methodische Pipeline** von der Datenaufbereitung über das Training bis zur Evaluation demonstriert und die **Stärken wie auch Schwächen moderner KI-Ansätze** in der medizinischen Bildanalyse auf begrenzter Hardware sichtbar macht. 
+
+Damit bietet sie eine fundierte Grundlage für weiterführende Projekte, ohne klinische Ansprüche zu erheben.
+
+# Reproduzierbarkeit
+
+Ein zentrales Qualitätsmerkmal wissenschaftlicher Arbeiten ist die Reproduzierbarkeit der Ergebnisse. Damit das hier entwickelte Modell von Dritten nachvollzogen und erneut trainiert werden kann, wurden mehrere Maßnahmen umgesetzt.
+
+## Code und Umgebung
+- **Versionierung:** Der gesamte Code liegt in einem klar strukturierten Projektordner vor.  
+- **Umgebungsdatei:** Alle Python-Pakete sind in einer `environment.yml` dokumentiert.
+
+## Anleitung zur Reproduktion (MacOS)
+
+Um die Ergebnisse dieser Arbeit nachzuvollziehen, wurde eine reproduzierbare Umgebung auf macOS getestet. Die folgenden Schritte beschreiben den Ablauf:
+
+1. Conda installieren (Miniforge/Conda-Forge) 
+   
+    ```{bash}
+   curl -L -O https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-arm64.sh
+   bash Miniforge3-MacOSX-arm64.sh
+    ```
+2. Projektordner erstellen
+
+    ```{bash}
+    mkdir brainTumorKi
+    cd brainTumorKI
+    ```
+
+3. Conda-Umgebung erstellen
+
+    ```{bash}
+    conda env create -f environment.yml
+    conda activate brain-tumor
+    python -m ipykernel install --user --name brain-tumor --display-name "Python (brain-tumor)"
+    ```
+
+4.	Daten vorbereiten:
+    Der Datensatz („Brain Tumor MRI Dataset“, masoudnickparvar) muss in den Ordner data/ entpackt werden. Die Verzeichnisstruktur (Training/, Testing/) ist bereits im Code vorgesehen.
+
+5. Notebook starten
+
+    ```{bash}
+    jupyter lab
+    ```
+
+## Zufallssamen
+Zur Reduktion stochastischer Effekte wurden Seeds für Python, NumPy und PyTorch gesetzt.  
+
+## Daten
+
+- **Quelle:** Der Datensatz stammt von Kaggle („Brain Tumor MRI Dataset“, masoudnickparvar).  
+- **Struktur:** Die Daten sind in separate Ordner für Training, Validierung und Test aufgeteilt.  
+- **Transparenz:** Die Verzeichnisstruktur ist dokumentiert und wird im Code direkt referenziert, sodass keine manuellen Änderungen notwendig sind.  
+
+## Modelle und Checkpoints
+
+- **Checkpoints:** Die besten Modelle aus Head-Only (`effb0_best_head.pt`) und Fine-Tuning (`effb0_best_finetune.pt`) sind abgespeichert und können direkt geladen werden.  
+- **Wiederverwendung:** Für den finalen Test wird automatisch der beste verfügbare Checkpoint geladen, um konsistente Ergebnisse zu gewährleisten.  
+
+## Dokumentation
+
+- **Quarto-Report:** Die gesamte Ausarbeitung und Ergebnissen liegt in einem Quarto-Notebook (`report.qmd`).  
+- **Notebook:** Ein begleitendes Jupyter-Notebook (`notebook.ipynb`) enthält alle wesentlichen Code-Schritte interaktiv.  
+- **Versionen:** Eine JSON-Datei (`versions.json`) dokumentiert die genauen Versionen der verwendeten Bibliotheken.  
+
+::: {.callout-note title="Wichtig für die Reproduzierbarkeit" icon="info"}
+Die Kombination aus dokumentierter Umgebung, fixierten Seeds, gespeicherten Checkpoints und einer klaren Datenstruktur ermöglicht es, dass die Ergebnisse auf jedem System mit Conda-Unterstützung reproduziert werden können.
+:::
+
+# Ehrenwörtliche Erklärung
+
+Hiermit versichere ich, **John Zekiri**, dass ich die vorliegende Arbeit selbstständig und ohne unzulässige fremde Hilfe verfasst habe.  
+Alle Stellen, die wörtlich oder sinngemäß aus Veröffentlichungen entnommen wurden, sind als solche kenntlich gemacht.  
+Die Arbeit wurde in dieser oder ähnlicher Form noch keiner anderen Prüfungsbehörde vorgelegt.  
+
+---
+
+Duisburg, den 06.09.2025  
+
+John Zekiri 
+
+{{< pagebreak >}}
+
+# Quellenverzeichnis
